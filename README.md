@@ -49,8 +49,15 @@ In the [Google Cloud Console](https://console.cloud.google.com/), once:
 
 1. Create or pick a project.
 2. Enable the **Google Calendar API**.
-3. Configure the **OAuth consent screen** as *External*, and add the target
-   account (e.g. `you@gmail.com`) as a **Test user**.
+3. Configure the **OAuth consent screen** as *External*, then **publish the
+   app** (*Audience → Publish app*). Leaving it in *Testing* means only
+   accounts listed under *Test users* can authorize — signing in with any
+   other gives `Error 403: access_denied` — **and Google expires the refresh
+   token every 7 days**, which breaks the sync weekly.
+
+   Publishing without Google verification is fine for a personal app: you will
+   see a "Google hasn't verified this app" warning once, and continue via
+   *Advanced → Go to ... (unsafe)*.
 4. Create an **OAuth client ID** of type **Desktop app**. Note the client ID and
    client secret.
 
@@ -65,10 +72,9 @@ python scripts/google_oauth_setup.py \
 Sign in as the account that owns the calendar. The script prints the three
 `GOOGLE_*` values to set on Railway.
 
-> Because the consent screen stays in *Testing*, Google expires the refresh
-> token every 7 days. Publish the app (**OAuth consent screen → Publish app**) to
-> get a token that does not expire on a timer. Verification is not required for
-> a personal app with only your own account on it.
+> If you see `Error 403: access_denied`, the consent screen is still in
+> *Testing* and the account you used is not an approved tester. Publish the app,
+> or add that account under *Audience → Test users*.
 
 ### 2. TrainingPeaks credential
 

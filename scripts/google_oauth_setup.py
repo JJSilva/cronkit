@@ -24,6 +24,7 @@ import http.server
 import json
 import secrets
 import socket
+import sys
 import threading
 import urllib.parse
 import urllib.request
@@ -104,6 +105,10 @@ def main() -> int:
     print("Opening your browser to authorize calendar access.")
     print("Sign in as the account that owns the target calendar.\n")
     print(f"If the browser does not open, visit:\n{auth_url}\n")
+    # Flush before blocking on the callback: when stdout is redirected to a file
+    # or pipe it is block-buffered, which would hide the URL for the entire wait
+    # — exactly when the user needs it.
+    sys.stdout.flush()
     webbrowser.open(auth_url)
 
     thread.join(timeout=300)
@@ -113,7 +118,16 @@ def main() -> int:
         print(f"Authorization failed: {_CallbackHandler.error}")
         return 1
     if not _CallbackHandler.code:
-        print("Timed out waiting for authorization.")
+        print(
+            "Timed out waiting for authorization.\n\n"
+            "If the browser showed 'Error 403: access_denied', the OAuth consent\n"
+            "screen is in Testing mode and the account you signed in with is not\n"
+            "an approved tester. Either:\n"
+            "  - add that account under Audience > Test users, or\n"
+            "  - publish the app (Audience > Publish app), which also stops\n"
+            "    Google expiring the refresh token every 7 days.\n"
+            "Then run this script again."
+        )
         return 1
 
     request = urllib.request.Request(
