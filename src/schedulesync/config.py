@@ -5,6 +5,7 @@ there is no state on disk, which is what lets the container be recreated freely.
 """
 
 import os
+import random
 from dataclasses import dataclass
 
 
@@ -20,6 +21,16 @@ def _require(name: str) -> str:
             f"See README.md for the full list and how to obtain each value."
         )
     return value
+
+
+def _float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise ConfigError(f"{name} must be a number, got {raw!r}") from None
 
 
 def _int(name: str, default: int) -> int:
@@ -52,8 +63,12 @@ class Config:
     # Rolling sync window: [today, today + sync_days].
     sync_days: int = 21
 
-    # How often the long-running server re-syncs.
-    interval_minutes: int = 60
+    # How often the long-running server re-syncs. Each wait is drawn uniformly
+    # from [interval_min_minutes, interval_max_minutes]. Setting both to the same
+    # value gives a fixed interval; a range spreads the requests out instead of
+    # hitting the API on an exact schedule.
+    interval_min_minutes: float = 60.0
+    interval_max_minutes: float = 60.0
 
     # IANA zone for interpreting TrainingPeaks' naive planned start times.
     # When empty, the target calendar's own timezone is used.
@@ -67,8 +82,34 @@ class Config:
     # so without this those endpoints refuse every request.
     api_token: str = ""
 
+    @property
+    def interval_label(self) -> str:
+        """Human-readable description of the sync cadence."""
+        if self.interval_min_minutes == self.interval_max_minutes:
+            return f"every {self.interval_min_minutes:g} min"
+        return f"every {self.interval_min_minutes:g}-{self.interval_max_minutes:g} min (randomised)"
+
+    def next_interval_seconds(self) -> float:
+        """Seconds to wait before the next sync.
+
+        Drawn fresh for each wait, so the schedule does not settle into a fixed
+        rhythm. Not security-sensitive, so the default RNG is fine.
+        """
+        return random.uniform(self.interval_min_minutes, self.interval_max_minutes) * 60
+
     @classmethod
     def from_env(cls) -> "Config":
+        # SYNC_INTERVAL_MINUTES remains the single-value form and supplies the
+        # default for both bounds, so existing deployments keep working.
+        fixed = _float("SYNC_INTERVAL_MINUTES", 60.0)
+        lo = _float("SYNC_INTERVAL_MIN_MINUTES", fixed)
+        hi = _float("SYNC_INTERVAL_MAX_MINUTES", fixed)
+        if lo <= 0 or hi <= 0:
+            raise ConfigError(f"Sync interval bounds must be positive, got {lo:g} and {hi:g} minutes.")
+        if lo > hi:
+            raise ConfigError(
+                f"SYNC_INTERVAL_MIN_MINUTES ({lo:g}) cannot exceed SYNC_INTERVAL_MAX_MINUTES ({hi:g})."
+            )
         return cls(
             tp_auth_cookie=_require("TP_AUTH_COOKIE"),
             google_client_id=_require("GOOGLE_CLIENT_ID"),
@@ -76,7 +117,8 @@ class Config:
             google_refresh_token=_require("GOOGLE_REFRESH_TOKEN"),
             calendar_id=os.environ.get("CALENDAR_ID", "").strip() or "primary",
             sync_days=_int("SYNC_DAYS", 21),
-            interval_minutes=_int("SYNC_INTERVAL_MINUTES", 60),
+            interval_min_minutes=lo,
+            interval_max_minutes=hi,
             timezone=os.environ.get("SYNC_TIMEZONE", "").strip(),
             prune=os.environ.get("SYNC_PRUNE", "true").strip().lower() != "false",
             api_token=os.environ.get("SYNC_API_TOKEN", "").strip(),

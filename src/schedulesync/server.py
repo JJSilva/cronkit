@@ -15,7 +15,7 @@ import logging
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from starlette.applications import Starlette
@@ -78,6 +78,7 @@ class SyncService:
         self.last_run_at: datetime | None = None
         self.last_result: SyncResult | None = None
         self.last_error: str | None = None
+        self.next_sync_at: datetime | None = None
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
 
@@ -97,7 +98,6 @@ class SyncService:
             return result
 
     async def _loop(self) -> None:
-        interval = max(self.config.interval_minutes, 1) * 60
         while True:
             try:
                 await self.sync_once()
@@ -106,7 +106,12 @@ class SyncService:
             except Exception:
                 # Never let one bad run kill the loop; the next tick retries.
                 logger.exception("Scheduled sync failed")
-            await asyncio.sleep(interval)
+            # Drawn fresh each time, so the cadence does not settle into an
+            # exact rhythm.
+            delay = self.config.next_interval_seconds()
+            self.next_sync_at = datetime.now(UTC) + timedelta(seconds=delay)
+            logger.info("next sync in %.1f minutes", delay / 60)
+            await asyncio.sleep(delay)
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -152,8 +157,11 @@ def create_app(config: Config | None = None) -> Starlette:
             {
                 "status": "ok",
                 "calendar_id": service.config.calendar_id,
-                "interval_minutes": service.config.interval_minutes,
+                "interval": service.config.interval_label,
+                "interval_min_minutes": service.config.interval_min_minutes,
+                "interval_max_minutes": service.config.interval_max_minutes,
                 "last_run_at": service.last_run_at.isoformat() if service.last_run_at else None,
+                "next_sync_at": service.next_sync_at.isoformat() if service.next_sync_at else None,
                 "last_error": service.last_error,
                 "last_result": _result_payload(service.last_result) if service.last_result else None,
             }

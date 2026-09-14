@@ -100,7 +100,9 @@ service variables:
 | `GOOGLE_REFRESH_TOKEN` | yes | — | From the setup script |
 | `CALENDAR_ID` | no | `primary` | Target calendar, e.g. `you@gmail.com` |
 | `SYNC_DAYS` | no | `21` | How many days ahead to sync |
-| `SYNC_INTERVAL_MINUTES` | no | `60` | How often the service re-syncs |
+| `SYNC_INTERVAL_MINUTES` | no | `60` | Fixed interval, and the default for both bounds below |
+| `SYNC_INTERVAL_MIN_MINUTES` | no | = above | Lower bound of the randomised interval |
+| `SYNC_INTERVAL_MAX_MINUTES` | no | = above | Upper bound of the randomised interval |
 | `SYNC_TIMEZONE` | no | calendar's own | IANA zone for planned start times |
 | `SYNC_PRUNE` | no | `true` | Remove events whose workout lost its time |
 | `SYNC_API_TOKEN` | for `serve` | — | Shared secret guarding `/status` and `/sync` |
@@ -142,7 +144,7 @@ Endpoints:
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
 | `GET /health` | none | Liveness only — returns `{"status":"ok"}` and nothing else |
-| `GET /status` | token | Last run's full report, including errors |
+| `GET /status` | token | Last run's full report, the cadence, and the next scheduled run |
 | `POST /sync` | token | Sync now (`?dry_run=true` to preview) |
 
 Authenticate with either header:
@@ -155,6 +157,18 @@ curl -X POST -H "X-Sync-Token: $SYNC_API_TOKEN" https://your-app.up.railway.app/
 `/health` stays `200` even after a failed sync, so an expired TrainingPeaks
 cookie does not make Railway restart-loop a container that cannot fix itself.
 Check `/status` to see whether runs are actually succeeding.
+
+### Sync cadence
+
+Each wait is drawn uniformly from `[SYNC_INTERVAL_MIN_MINUTES,
+SYNC_INTERVAL_MAX_MINUTES]`, so the service does not poll on an exact schedule.
+Setting the two equal — or setting only `SYNC_INTERVAL_MINUTES` — gives a fixed
+interval instead. Invalid ranges (inverted or non-positive) are rejected at
+startup rather than silently clamped.
+
+Note that each run constructs fresh API clients, so both access tokens are
+re-exchanged every sync. That is fine at intervals of a few minutes; if you want
+to poll considerably more often, cache the clients across runs first.
 
 ## Security
 
