@@ -1,4 +1,4 @@
-"""The comment block: what it says, and how it merges into an existing comment."""
+"""The comment block: what it says, and how the processed marker is detected."""
 
 from datetime import UTC, datetime, timedelta
 
@@ -11,7 +11,6 @@ from cronkit.tools.trainingpeaks_core_temp.report import (
     ReportOptions,
     build_report,
     has_report,
-    merge_report,
 )
 
 
@@ -90,57 +89,15 @@ def test_an_empty_series_is_refused():
 # --- the processed marker --------------------------------------------------
 
 
-def test_a_block_is_recognised_as_already_processed():
-    assert has_report(build_report(series(37.0)))
+def test_a_block_in_the_thread_is_recognised_as_already_processed():
+    assert has_report([build_report(series(37.0))])
 
 
-@pytest.mark.parametrize("comment", [None, "", "Felt great today."])
-def test_an_unannotated_comment_is_not_marked_processed(comment):
-    assert not has_report(comment)
+def test_the_block_is_found_among_other_comments():
+    thread = ["Nice one!", build_report(series(37.0)), "How did it feel?"]
+    assert has_report(thread)
 
 
-# --- merging ---------------------------------------------------------------
-
-
-def test_an_empty_comment_becomes_just_the_block():
-    report = build_report(series(37.0))
-    assert merge_report(None, report) == report
-    assert merge_report("   ", report) == report
-
-
-def test_the_athletes_own_words_are_kept_above_the_block():
-    report = build_report(series(37.0))
-    merged = merge_report("Legs felt heavy.", report)
-    assert merged.startswith("Legs felt heavy.")
-    assert merged.endswith(FOOTER)
-
-
-def test_re_running_replaces_the_block_instead_of_stacking_them():
-    """A re-uploaded file must rewrite the block, not append a second one."""
-    first = build_report(series(37.0))
-    second = build_report(series(39.0))
-    merged = merge_report(merge_report("Notes.", first), second)
-
-    assert merged.count(HEADER) == 1
-    assert "39.0" in merged and "37.0" not in merged
-    assert merged.startswith("Notes.")
-
-
-def test_text_written_after_the_block_survives_a_rewrite():
-    report = build_report(series(37.0))
-    existing = f"Before.\n\n{report}\n\nAfter the block."
-    merged = merge_report(existing, build_report(series(39.0)))
-
-    assert merged.startswith("Before.")
-    assert merged.endswith("After the block.")
-    assert merged.count(HEADER) == 1
-
-
-def test_a_block_with_no_footer_is_replaced_through_the_end():
-    """Hand-edited or truncated blocks still must not accumulate."""
-    existing = f"Notes.\n\n{HEADER}\nsome older text with no footer"
-    merged = merge_report(existing, build_report(series(37.0)))
-
-    assert merged.count(HEADER) == 1
-    assert "some older text" not in merged
-    assert merged.startswith("Notes.")
+@pytest.mark.parametrize("thread", [[], [""], ["Felt great today."]])
+def test_a_thread_without_the_block_is_not_marked_processed(thread):
+    assert not has_report(thread)

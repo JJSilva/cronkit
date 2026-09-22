@@ -1,14 +1,15 @@
 """Turning a CORE series into the text that goes in the workout comment.
 
-The block is delimited by a header and a footer so that a later run can replace
-it in place. Everything outside the markers is the athlete's own writing and is
-never touched — which is the whole reason for having a footer rather than just
-appending to the end of the field.
+The block is posted as its own entry in the workout's comment thread, so it never
+sits alongside anything the athlete wrote and there is nothing to merge into or
+replace. The header doubles as the "already processed" marker: if any comment on
+the workout contains it, the workout is skipped.
 
-The header doubles as the "already processed" marker: if it is present, the
-workout is skipped.
+The footer is kept so the block reads as a closed unit in a thread that may have
+other comments after it.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -131,28 +132,6 @@ def _series_lines(series: CoreSeries, opts: ReportOptions) -> list[str]:
     return lines
 
 
-def has_report(comment: str | None) -> bool:
-    """Whether a comment already carries a block this tool wrote."""
-    return bool(comment) and HEADER in comment
-
-
-def merge_report(comment: str | None, report: str) -> str:
-    """Put ``report`` into ``comment``, replacing any block already there.
-
-    Replacing rather than appending is what makes a re-run safe: if a device
-    re-uploads its file, the block is rewritten in place instead of stacking up.
-    An existing block with no footer — hand-edited, or written before the footer
-    existed — is replaced through to the end of the field, since there is no
-    reliable way to tell where it was meant to stop.
-    """
-    existing = (comment or "").strip()
-    if not existing:
-        return report
-
-    start = existing.find(HEADER)
-    if start == -1:
-        return f"{existing}\n\n{report}"
-
-    end = existing.find(FOOTER, start)
-    tail = existing[end + len(FOOTER) :] if end != -1 else ""
-    return f"{existing[:start]}{report}{tail}".strip()
+def has_report(comments: Iterable[str]) -> bool:
+    """Whether a workout's comment thread already carries a block we wrote."""
+    return any(HEADER in (comment or "") for comment in comments)

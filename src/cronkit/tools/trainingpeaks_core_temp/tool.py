@@ -13,8 +13,9 @@ Business rules, in the order they apply:
 3. Skip any with no device upload.
 4. Parse the upload. A file with no CORE fields gets no comment at all; the
    workout is simply left alone.
-5. Write the block into ``athleteComments``, replacing an earlier block rather
-   than appending to it.
+5. Post the block as a comment on the workout. The comment thread is the only
+   writable comment surface TrainingPeaks offers — the v6 workout object accepts
+   comment-looking fields on a PUT and silently discards them.
 """
 
 import argparse
@@ -26,7 +27,7 @@ from cronkit.core.tool import Tool, ToolResult
 from cronkit.integrations.trainingpeaks import TrainingPeaksClient, Workout
 from cronkit.tools.trainingpeaks_core_temp.config import CoreTempConfig
 from cronkit.tools.trainingpeaks_core_temp.fit import parse_core_series
-from cronkit.tools.trainingpeaks_core_temp.report import build_report, has_report, merge_report
+from cronkit.tools.trainingpeaks_core_temp.report import build_report, has_report
 
 logger = logging.getLogger(__name__)
 
@@ -90,9 +91,10 @@ class TrainingPeaksCoreTempTool(Tool):
             for workout in candidates:
                 label = f"{workout.day} {workout.title}"
 
-                # The list response carries the comment, so an already-annotated
-                # workout costs nothing further — which is the steady state.
-                if has_report(workout.athlete_comments):
+                # The list response carries the comment thread, so an
+                # already-annotated workout costs nothing further — which is the
+                # steady state.
+                if has_report(workout.comments):
                     already_done.append(label)
                     continue
 
@@ -152,14 +154,11 @@ class TrainingPeaksCoreTempTool(Tool):
         if dry_run:
             return "annotated"
 
-        # Re-read the comment from the authoritative object rather than trusting
-        # the list snapshot, which may be minutes old by the time we get here.
-        current = await tp.workout(workout.id)
-        if has_report(current.get("athleteComments")):
+        # Re-read the thread rather than trusting the list snapshot, which may be
+        # minutes old by the time we get here. A comment cannot be edited, only
+        # added, so a duplicate would be permanent.
+        if has_report(await tp.workout_comments(workout.id)):
             return "already_done"
 
-        await tp.update_workout(
-            workout.id,
-            {"athleteComments": merge_report(current.get("athleteComments"), report)},
-        )
+        await tp.add_comment(workout.id, report)
         return "annotated"

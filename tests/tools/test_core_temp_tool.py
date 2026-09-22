@@ -38,7 +38,7 @@ def workout(**overrides) -> Workout:
         "planned_hours": None,
         "actual_start": datetime(2026, 9, 22, 13, 0),
         "actual_hours": 1.5,
-        "athlete_comments": None,
+        "comments": (),
     }
     base.update(overrides)
     return Workout(**base)
@@ -51,8 +51,8 @@ class FakeTP:
         self._workouts = workouts
         self._file_bytes = file_bytes
         self._files = files
-        self.comments = {w.id: w.athlete_comments for w in workouts}
-        self.updates: list[tuple[str, dict]] = []
+        self.comments = {w.id: list(w.comments) for w in workouts}
+        self.posted: list[tuple[str, str]] = []
         self.downloads: list[str] = []
 
     async def __aenter__(self):
@@ -71,12 +71,12 @@ class FakeTP:
         self.downloads.append(workout_id)
         return self._file_bytes
 
-    async def workout(self, workout_id):
-        return {"workoutId": workout_id, "athleteComments": self.comments.get(workout_id)}
+    async def workout_comments(self, workout_id):
+        return tuple(self.comments.get(workout_id, ()))
 
-    async def update_workout(self, workout_id, changes):
-        self.updates.append((workout_id, changes))
-        self.comments[workout_id] = changes.get("athleteComments")
+    async def add_comment(self, workout_id, text):
+        self.posted.append((workout_id, text))
+        self.comments.setdefault(workout_id, []).append(text)
 
 
 def make_tool(**overrides) -> TrainingPeaksCoreTempTool:
@@ -100,28 +100,21 @@ async def test_a_completed_workout_gets_its_comment_written(monkeypatch, core_by
 
     assert result.ok
     assert result.details["annotated"] == [f"{TODAY} Road Cycling"]
-    assert len(fake.updates) == 1
-    workout_id, changes = fake.updates[0]
+    assert len(fake.posted) == 1
+    workout_id, text = fake.posted[0]
     assert workout_id == "100"
-    assert HEADER in changes["athleteComments"]
-    assert "Core  avg" in changes["athleteComments"]
+    assert HEADER in text
+    assert "Core  avg" in text
 
 
-async def test_the_block_is_written_to_the_post_activity_comment_field(monkeypatch, core_bytes):
-    """athleteComments is the field TrainingPeaks shows as Post-Activity Comments."""
-    fake = FakeTP([workout()], core_bytes)
+async def test_the_athletes_own_comments_are_left_alone(monkeypatch, core_bytes):
+    """The block is its own thread entry, so nothing existing is rewritten."""
+    fake = FakeTP([workout(comments=("Felt strong.",))], core_bytes)
     wire(monkeypatch, fake)
     await make_tool().run()
 
-    assert list(fake.updates[0][1]) == ["athleteComments"]
-
-
-async def test_existing_athlete_notes_are_preserved(monkeypatch, core_bytes):
-    fake = FakeTP([workout(athlete_comments="Felt strong.")], core_bytes)
-    wire(monkeypatch, fake)
-    await make_tool().run()
-
-    assert fake.updates[0][1]["athleteComments"].startswith("Felt strong.")
+    assert fake.comments["100"][0] == "Felt strong."
+    assert HEADER in fake.comments["100"][1]
 
 
 # --- what gets skipped -----------------------------------------------------
@@ -129,13 +122,13 @@ async def test_existing_athlete_notes_are_preserved(monkeypatch, core_bytes):
 
 async def test_an_already_annotated_workout_is_left_alone(monkeypatch, core_bytes):
     """The processed check — and it must not even download the file."""
-    fake = FakeTP([workout(athlete_comments=f"Notes\n{HEADER}\nold block")], core_bytes)
+    fake = FakeTP([workout(comments=("Notes", f"{HEADER}\nold block"))], core_bytes)
     wire(monkeypatch, fake)
 
     result = await make_tool().run()
 
     assert result.details["already_annotated"] == [f"{TODAY} Road Cycling"]
-    assert fake.updates == []
+    assert fake.posted == []
     assert fake.downloads == []
 
 
@@ -146,7 +139,7 @@ async def test_a_planned_only_workout_is_not_a_candidate(monkeypatch, core_bytes
     result = await make_tool().run()
 
     assert result.details["completed_workouts"] == 0
-    assert fake.updates == []
+    assert fake.posted == []
 
 
 async def test_a_workout_with_no_upload_is_skipped(monkeypatch, core_bytes):
@@ -156,7 +149,7 @@ async def test_a_workout_with_no_upload_is_skipped(monkeypatch, core_bytes):
     result = await make_tool().run()
 
     assert result.details["no_core_data"] == [f"{TODAY} Road Cycling"]
-    assert fake.updates == []
+    assert fake.posted == []
 
 
 async def test_a_file_without_core_data_gets_no_comment(monkeypatch, no_core_bytes):
@@ -167,7 +160,7 @@ async def test_a_file_without_core_data_gets_no_comment(monkeypatch, no_core_byt
     result = await make_tool().run()
 
     assert result.details["no_core_data"] == [f"{TODAY} Road Cycling"]
-    assert fake.updates == []
+    assert fake.posted == []
 
 
 async def test_a_file_without_core_data_is_not_downloaded_twice(monkeypatch, no_core_bytes):
@@ -188,12 +181,12 @@ async def test_a_file_without_core_data_is_not_downloaded_twice(monkeypatch, no_
 async def test_a_block_added_between_listing_and_writing_is_not_overwritten(monkeypatch, core_bytes):
     """The list snapshot can be minutes stale by the time we go to write."""
     fake = FakeTP([workout()], core_bytes)
-    fake.comments["100"] = f"{HEADER}\nwritten by another run"
+    fake.comments["100"] = [f"{HEADER}\nwritten by another run"]
     wire(monkeypatch, fake)
 
     result = await make_tool().run()
 
-    assert fake.updates == []
+    assert fake.posted == []
     assert result.details["already_annotated"] == [f"{TODAY} Road Cycling"]
 
 
@@ -226,7 +219,7 @@ async def test_a_dry_run_reports_without_writing(monkeypatch, core_bytes):
 
     assert result.dry_run
     assert result.details["annotated"] == [f"{TODAY} Road Cycling"]
-    assert fake.updates == []
+    assert fake.posted == []
 
 
 # --- configuration ---------------------------------------------------------

@@ -234,8 +234,7 @@ Each run:
 2. Skips any whose comment already carries the report block.
 3. Downloads the newest device upload and parses it.
 4. Skips workouts whose file has no CORE data — those get no comment at all.
-5. Writes the block into `athleteComments`, replacing an earlier block rather
-   than appending to it.
+5. Posts the block as a comment on the workout.
 
 The block looks like this:
 
@@ -275,16 +274,29 @@ instead, so one code path covers both settings.
 Not every `record` carries a CORE reading (the sensor samples more slowly than
 the watch records), so records without one are skipped rather than interpolated.
 
+## Which field the comment goes in
+
+The workout's **comment thread**, via
+`POST /fitness/v2/athletes/{id}/workouts/{wid}/comments`. That is the only
+writable comment surface TrainingPeaks offers.
+
+The v6 workout object carries fields that look like they should work —
+`newComment` is present on every workout, and `athleteComments` is what the
+mobile app appears to use. Neither does: a `PUT` containing them returns `200`
+and silently discards the value. This was established by round-tripping six
+candidate field names against the live API and reading each one back; none
+survived. Do not "fix" the tool to write one of them.
+
 ## Why there is no "processed" database
 
 The report block is delimited by a header and a footer, and the header *is* the
-processed marker. A workout whose comment contains it is skipped — and because
-the workout list response already includes the comment, an already-annotated
+processed marker. A workout whose thread contains it is skipped — and because the
+workout list response already includes `workoutComments`, an already-annotated
 workout costs no extra request. In the steady state a run is a single API call.
 
-Replacing between the markers, rather than appending, is what makes a re-run
-safe: if a device re-uploads its file, the block is rewritten in place instead of
-stacking up, and anything you wrote above or below it is left alone.
+A comment cannot be edited or replaced, only added, so a duplicate would be
+permanent. The thread is therefore re-read immediately before posting rather than
+trusting the list snapshot, which may be minutes old by then.
 
 One piece of genuinely in-memory state: workouts whose upload turned out to have
 no CORE data are remembered for the life of the process, so a workout recorded

@@ -91,8 +91,9 @@ class Workout:
     # Actual duration in hours, from ``totalTime``.
     actual_hours: float | None = None
 
-    # The athlete's post-activity comment, as the list endpoint reports it.
-    athlete_comments: str | None = None
+    # Comment-thread entries, as the list endpoint reports them. This is what
+    # TrainingPeaks shows as a workout's post-activity comments.
+    comments: tuple[str, ...] = ()
 
     @property
     def has_planned_time(self) -> bool:
@@ -165,9 +166,11 @@ def parse_workout(raw: dict[str, Any]) -> Workout | None:
     if not isinstance(actual_hours, int | float) or actual_hours <= 0:
         actual_hours = None
 
-    comments = raw.get("athleteComments")
-    if not isinstance(comments, str):
-        comments = None
+    comments = tuple(
+        entry["comment"]
+        for entry in (raw.get("workoutComments") or [])
+        if isinstance(entry, dict) and isinstance(entry.get("comment"), str)
+    )
 
     return Workout(
         id=str(workout_id),
@@ -179,7 +182,7 @@ def parse_workout(raw: dict[str, Any]) -> Workout | None:
         planned_hours=float(hours) if hours is not None else None,
         actual_start=_parse_naive(raw.get("startTime")),
         actual_hours=float(actual_hours) if actual_hours is not None else None,
-        athlete_comments=comments,
+        comments=comments,
     )
 
 
@@ -359,20 +362,29 @@ class TrainingPeaksClient:
         )
         return response.content
 
-    async def update_workout(self, workout_id: str, changes: dict[str, Any]) -> None:
-        """Apply ``changes`` to a workout.
+    async def add_comment(self, workout_id: str, text: str) -> None:
+        """Post a comment to a workout's thread.
 
-        TrainingPeaks rejects a partial body, so this reads the current object,
-        merges on top of it, and writes the whole thing back. Read-modify-write
-        means a change made in the UI between the two calls is lost; the window
-        is one request wide and the alternative is not offered by the API.
+        This is the only writable comment surface. The v6 workout object carries
+        fields that look like comment text — ``newComment``, and an
+        ``athleteComments`` the UI seems to imply — but a PUT containing them
+        returns 200 and silently discards them, so they cannot be used. Verified
+        by round-tripping six candidate field names against the live API.
         """
-        existing = await self.workout(workout_id)
         athlete_id = await self.athlete_id()
         await self._request(
-            "PUT",
-            f"/fitness/v6/athletes/{athlete_id}/workouts/{workout_id}",
-            json={**existing, **changes},
+            "POST",
+            f"/fitness/v2/athletes/{athlete_id}/workouts/{workout_id}/comments",
+            json={"value": text},
+        )
+
+    async def workout_comments(self, workout_id: str) -> tuple[str, ...]:
+        """Re-read one workout's comment thread."""
+        payload = await self.workout(workout_id)
+        return tuple(
+            entry["comment"]
+            for entry in (payload.get("workoutComments") or [])
+            if isinstance(entry, dict) and isinstance(entry.get("comment"), str)
         )
 
     async def workouts(self, start: date, end: date) -> list[Workout]:
