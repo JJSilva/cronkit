@@ -16,11 +16,14 @@ Business rules, in the order they apply:
 import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from schedulesync.config import Config, ConfigError
-from schedulesync.gcal import CalendarClient, SyncedEvent, event_id_for
-from schedulesync.trainingpeaks import TrainingPeaksClient, Workout
+from cronkit.core.errors import ConfigError
+from cronkit.core.tool import ToolResult
+from cronkit.tools.trainingpeaks_calendar.config import CalendarSyncConfig
+from cronkit.tools.trainingpeaks_calendar.gcal import CalendarClient, SyncedEvent, event_id_for
+from cronkit.tools.trainingpeaks_calendar.trainingpeaks import TrainingPeaksClient, Workout
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,31 @@ class SyncResult:
             f"unchanged {len(self.unchanged)}, "
             f"{verb}deleted {len(self.deleted)}"
             + (f", errors {len(self.errors)}" if self.errors else "")
+        )
+
+    def details(self) -> dict[str, Any]:
+        """JSON-safe breakdown of the run, for ``/status`` and triggered runs."""
+        return {
+            "window": {"start": self.window_start.isoformat(), "end": self.window_end.isoformat()},
+            "timezone": self.timezone,
+            "workouts": {
+                "total": self.total_workouts,
+                "timed": self.timed_workouts,
+                "skipped_untimed": self.skipped_untimed,
+            },
+            "created": self.created,
+            "updated": self.updated,
+            "unchanged": self.unchanged,
+            "deleted": self.deleted,
+        }
+
+    def to_tool_result(self) -> ToolResult:
+        """Adapt to the shape the daemon reports for every tool."""
+        return ToolResult(
+            summary=self.summary_line(),
+            details=self.details(),
+            errors=list(self.errors),
+            dry_run=self.dry_run,
         )
 
 
@@ -106,7 +134,7 @@ def _resolve_timezone(name: str) -> ZoneInfo:
         raise ConfigError(f"Unknown timezone {name!r}: {exc}") from exc
 
 
-async def run_sync(config: Config, *, dry_run: bool = False, today: date | None = None) -> SyncResult:
+async def run_sync(config: CalendarSyncConfig, *, dry_run: bool = False, today: date | None = None) -> SyncResult:
     """Run one full sync pass and return what happened."""
     start_day = today or date.today()
     end_day = start_day + timedelta(days=config.sync_days)

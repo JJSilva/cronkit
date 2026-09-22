@@ -25,6 +25,11 @@ REQUEST_TIMEOUT = 30.0
 
 # Marks events this tool owns, so pruning can never touch anything else on the
 # calendar.
+#
+# The value is frozen at "schedulesync", the project's name before it became
+# cronkit. It is stamped on every event already on the calendar and is what
+# list_synced_events() filters on, so renaming it would make the sync lose track
+# of its own past events and stop pruning them. It is a wire format, not a label.
 MARKER_KEY = "schedulesync"
 MARKER_VALUE = "1"
 WORKOUT_ID_KEY = "tpWorkoutId"

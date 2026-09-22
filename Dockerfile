@@ -1,5 +1,5 @@
-# ScheduleSync - container image for Railway.
-# Runs the periodic TrainingPeaks -> Google Calendar sync and serves /health.
+# cronkit - container image for Railway.
+# Runs every configured tool on its own schedule and serves /health.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -16,4 +16,4 @@ RUN pip install --upgrade pip && pip install .
 ENV PORT=8000
 EXPOSE 8000
 
-CMD ["schedulesync", "serve"]
+CMD ["cronkit", "serve"]

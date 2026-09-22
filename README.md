@@ -1,7 +1,115 @@
-# ScheduleSync
+# cronkit
 
-Syncs **timed** TrainingPeaks workouts into a Google Calendar, running unattended
-on Railway.
+A small cron daemon for personal automations. One deployment runs a set of
+**tools** — independent jobs, each with its own credentials and its own cadence —
+behind one health endpoint and one API.
+
+It started life as a single TrainingPeaks → Google Calendar sync; that sync is
+now the first tool.
+
+| Tool | What it does |
+| --- | --- |
+| `trainingpeaks-calendar` | Syncs timed TrainingPeaks workouts into a Google Calendar |
+
+To add another, see **[docs/adding-a-tool.md](docs/adding-a-tool.md)**.
+
+## Architecture
+
+```
+src/cronkit/
+  cli.py                       cronkit list / run / run-all / serve
+  core/
+    tool.py                    the Tool contract + ToolResult
+    registry.py                the catalogue of known tools
+    schedule.py                per-tool cadence (a randomised interval)
+    daemon.py                  one independent loop per tool
+    server.py                  /health, /status, /tools, /tools/{name}/run
+    config.py                  daemon-level settings
+    env.py                     environment lookups, with alias chains
+    errors.py
+  tools/
+    __init__.py                registers every tool
+    trainingpeaks_calendar/    tool #1: config, sync rules, API clients
+```
+
+Three properties the design leans on:
+
+- **Tools are isolated.** Each gets its own asyncio task, its own lock, and its
+  own schedule. A tool that fails — or that never configured, because a
+  credential is missing — is reported as such and skipped; the others keep
+  running. One expired cookie must not take down a deployment doing five things.
+- **`core/` never imports from `tools/`.** The framework knows the `Tool`
+  contract and nothing about any particular job.
+- **Everything comes from the environment.** No state on disk, so the container
+  can be rebuilt or moved freely.
+
+## Running
+
+```bash
+cronkit list                                   # what's registered, and is it configured?
+cronkit run trainingpeaks-calendar --dry-run   # preview one tool
+cronkit run trainingpeaks-calendar --days 60   # tools can add their own flags
+cronkit run-all                                # every configured tool, once
+cronkit serve                                  # the scheduled daemon (what Railway starts)
+```
+
+`cronkit run <tool> --help` lists that tool's flags.
+
+## Configuration
+
+Daemon-level settings are prefixed `CRONKIT_`. Each tool namespaces its own under
+its own prefix, so two tools can never collide. Copy `.env.example` to `.env` for
+local runs, or set the same keys as Railway service variables.
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `CRONKIT_API_TOKEN` | for `serve` | — | Shared secret guarding every endpoint except `/health` |
+| `CRONKIT_TOOLS` | no | all | Comma-separated list of tools to load |
+| `CRONKIT_RUN_ON_START` | no | `true` | Run each tool once at startup rather than waiting out the first interval |
+| `PORT` | no | `8000` | Port the HTTP server binds; Railway sets this |
+
+Every tool also gets, from its prefix:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `<PREFIX>_INTERVAL_MINUTES` | tool's own | Fixed cadence; sets both bounds below |
+| `<PREFIX>_INTERVAL_MIN_MINUTES` | = above | Lower bound of the randomised cadence |
+| `<PREFIX>_INTERVAL_MAX_MINUTES` | = above | Upper bound |
+| `<PREFIX>_ENABLED` | `true` | `false` loads the tool but never schedules it |
+
+Each wait is drawn uniformly from `[min, max]`, so a tool does not poll on an
+exact schedule. Equal bounds give a fixed interval. Invalid ranges (inverted or
+non-positive) are rejected at load rather than silently clamped.
+
+### Upgrading from ScheduleSync
+
+The pre-cronkit variable names are all still accepted, so an existing deployment
+keeps working without being touched. The namespaced name wins when both are set.
+
+```
+TP_AUTH_COOKIE          -> TP_CALENDAR_AUTH_COOKIE
+GOOGLE_CLIENT_ID        -> TP_CALENDAR_GOOGLE_CLIENT_ID
+GOOGLE_CLIENT_SECRET    -> TP_CALENDAR_GOOGLE_CLIENT_SECRET
+GOOGLE_REFRESH_TOKEN    -> TP_CALENDAR_GOOGLE_REFRESH_TOKEN
+CALENDAR_ID             -> TP_CALENDAR_GOOGLE_CALENDAR_ID
+SYNC_DAYS               -> TP_CALENDAR_DAYS
+SYNC_TIMEZONE           -> TP_CALENDAR_TIMEZONE
+SYNC_PRUNE              -> TP_CALENDAR_PRUNE
+SYNC_INTERVAL_*_MINUTES -> TP_CALENDAR_INTERVAL_*_MINUTES
+SYNC_API_TOKEN          -> CRONKIT_API_TOKEN
+```
+
+`POST /sync` still works as a deprecated alias for
+`POST /tools/trainingpeaks-calendar/run`, and `X-Sync-Token` is still accepted
+alongside `X-Cronkit-Token`. The CLI is the one breaking change:
+`schedulesync sync` is now `cronkit run trainingpeaks-calendar`, and
+`schedulesync serve` is `cronkit serve`.
+
+---
+
+# Tool: `trainingpeaks-calendar`
+
+Syncs **timed** TrainingPeaks workouts into a Google Calendar.
 
 - Only workouts with a **planned start time** set in TrainingPeaks are synced.
   Untimed workouts are ignored entirely.
@@ -22,13 +130,13 @@ TrainingPeaks exposes two different time fields, and only one of them means
 | `startTimePlanned` | The time you set on a planned workout in the TrainingPeaks UI | Only when you set one |
 | `startTime` | The actual start recorded by your watch/head unit | Only after you upload a completed workout |
 
-ScheduleSync reads **`startTimePlanned`**. Using `startTime` instead would sync
-only workouts you had already finished, filling the calendar with the past.
+This tool reads **`startTimePlanned`**. Using `startTime` instead would sync only
+workouts you had already finished, filling the calendar with the past.
 
 This is also why the sibling `trainingpeaks-mcp` server cannot drive this sync
 as-is: it maps `startTime` into its responses and drops `startTimePlanned`
-entirely (`src/tp_mcp/client/models.py`, `WorkoutSummary`). ScheduleSync talks to
-the TrainingPeaks API directly and reads the right field.
+entirely (`src/tp_mcp/client/models.py`, `WorkoutSummary`). This tool talks to the
+TrainingPeaks API directly and reads the right field.
 
 ## How it stays idempotent without a database
 
@@ -37,9 +145,10 @@ workout id (`tpplan<workoutId>`, which is valid base32hex). Re-running finds
 the same id and updates in place instead of creating duplicates, so there is no
 state to persist and the Railway container can be rebuilt or redeployed freely.
 
-Events are tagged with a private extended property (`schedulesync=1`). Pruning
-only ever considers events carrying that tag, so nothing else on your calendar
-can be touched.
+Events are tagged with a private extended property (`schedulesync=1` — frozen at
+the project's old name, because it is stamped on every event already on the
+calendar). Pruning only ever considers events carrying that tag, so nothing else
+on your calendar can be touched.
 
 ## Setup
 
@@ -70,7 +179,7 @@ python scripts/google_oauth_setup.py \
 ```
 
 Sign in as the account that owns the calendar. The script prints the three
-`GOOGLE_*` values to set on Railway.
+`TP_CALENDAR_GOOGLE_*` values to set on Railway.
 
 > If you see `Error 403: access_denied`, the consent screen is still in
 > *Testing* and the account you used is not an approved tester. Publish the app,
@@ -78,55 +187,34 @@ Sign in as the account that owns the calendar. The script prints the three
 
 ### 2. TrainingPeaks credential
 
-`TP_AUTH_COOKIE` is the `Production_tpAuth` cookie value from a logged-in
-TrainingPeaks session — the same credential your `trainingpeaks-mcp` deployment
-uses. Copy it from your browser's dev tools (Application → Cookies →
+`TP_CALENDAR_AUTH_COOKIE` is the `Production_tpAuth` cookie value from a
+logged-in TrainingPeaks session — the same credential your `trainingpeaks-mcp`
+deployment uses. Copy it from your browser's dev tools (Application → Cookies →
 `trainingpeaks.com`).
 
 This cookie **expires periodically** and is the one thing that needs occasional
-manual attention. When it lapses, `/health` reports a `last_error` mentioning an
+manual attention. When it lapses, `/status` reports a `last_error` mentioning an
 expired cookie; capture a fresh value and update the Railway variable.
 
 ### 3. Configure
 
-Copy `.env.example` to `.env` for local runs, or set the same keys as Railway
-service variables:
-
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `TP_AUTH_COOKIE` | yes | — | TrainingPeaks `Production_tpAuth` cookie |
-| `GOOGLE_CLIENT_ID` | yes | — | OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | yes | — | OAuth client secret |
-| `GOOGLE_REFRESH_TOKEN` | yes | — | From the setup script |
-| `CALENDAR_ID` | no | `primary` | Target calendar, e.g. `you@gmail.com` |
-| `SYNC_DAYS` | no | `21` | How many days ahead to sync |
-| `SYNC_INTERVAL_MINUTES` | no | `60` | Fixed interval, and the default for both bounds below |
-| `SYNC_INTERVAL_MIN_MINUTES` | no | = above | Lower bound of the randomised interval |
-| `SYNC_INTERVAL_MAX_MINUTES` | no | = above | Upper bound of the randomised interval |
-| `SYNC_TIMEZONE` | no | calendar's own | IANA zone for planned start times |
-| `SYNC_PRUNE` | no | `true` | Remove events whose workout lost its time |
-| `SYNC_API_TOKEN` | for `serve` | — | Shared secret guarding `/status` and `/sync` |
+| `TP_CALENDAR_AUTH_COOKIE` | yes | — | TrainingPeaks `Production_tpAuth` cookie |
+| `TP_CALENDAR_GOOGLE_CLIENT_ID` | yes | — | OAuth client ID |
+| `TP_CALENDAR_GOOGLE_CLIENT_SECRET` | yes | — | OAuth client secret |
+| `TP_CALENDAR_GOOGLE_REFRESH_TOKEN` | yes | — | From the setup script |
+| `TP_CALENDAR_GOOGLE_CALENDAR_ID` | no | `primary` | Target calendar, e.g. `you@gmail.com` |
+| `TP_CALENDAR_DAYS` | no | `21` | How many days ahead to sync |
+| `TP_CALENDAR_TIMEZONE` | no | calendar's own | IANA zone for planned start times |
+| `TP_CALENDAR_PRUNE` | no | `true` | Remove events whose workout lost its time |
+| `TP_CALENDAR_INTERVAL_*_MINUTES` | no | `60` | Cadence — see the table above |
 
-## Running
+Note that each run constructs fresh API clients, so both access tokens are
+re-exchanged every sync. That is fine at intervals of a few minutes; if you want
+to poll considerably more often, cache the clients across runs first.
 
-Check what it would do, without writing anything:
-
-```bash
-schedulesync sync --dry-run
-schedulesync sync --dry-run --days 60
-```
-
-Run a single real sync:
-
-```bash
-schedulesync sync
-```
-
-Run the scheduled service (what Railway starts):
-
-```bash
-schedulesync serve
-```
+---
 
 ## Deploying to Railway
 
@@ -135,40 +223,31 @@ railway init      # or: railway link, for an existing project
 railway up
 ```
 
-`railway.json` builds the Dockerfile and starts `schedulesync serve`, with
-`/health` as the healthcheck. Set the environment variables above in the service
-settings.
+`railway.json` builds the Dockerfile and starts `cronkit serve`, with `/health`
+as the healthcheck. Set the environment variables above in the service settings.
 
 Endpoints:
 
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
 | `GET /health` | none | Liveness only — returns `{"status":"ok"}` and nothing else |
-| `GET /status` | token | Last run's full report, the cadence, and the next scheduled run |
-| `POST /sync` | token | Sync now (`?dry_run=true` to preview) |
+| `GET /status` | token | Every tool: its schedule, config, and last run |
+| `GET /tools` | token | The loaded tools and their cadences |
+| `GET /tools/{name}` | token | One tool's state |
+| `POST /tools/{name}/run` | token | Run one tool now (`?dry_run=true` to preview) |
+| `POST /sync` | token | Deprecated alias for `POST /tools/trainingpeaks-calendar/run` |
 
 Authenticate with either header:
 
 ```bash
-curl -H "Authorization: Bearer $SYNC_API_TOKEN" https://your-app.up.railway.app/status
-curl -X POST -H "X-Sync-Token: $SYNC_API_TOKEN" https://your-app.up.railway.app/sync
+curl -H "Authorization: Bearer $CRONKIT_API_TOKEN" https://your-app.up.railway.app/status
+curl -X POST -H "X-Cronkit-Token: $CRONKIT_API_TOKEN" \
+  https://your-app.up.railway.app/tools/trainingpeaks-calendar/run
 ```
 
-`/health` stays `200` even after a failed sync, so an expired TrainingPeaks
+`/health` stays `200` even after a failed run, so an expired TrainingPeaks
 cookie does not make Railway restart-loop a container that cannot fix itself.
 Check `/status` to see whether runs are actually succeeding.
-
-### Sync cadence
-
-Each wait is drawn uniformly from `[SYNC_INTERVAL_MIN_MINUTES,
-SYNC_INTERVAL_MAX_MINUTES]`, so the service does not poll on an exact schedule.
-Setting the two equal — or setting only `SYNC_INTERVAL_MINUTES` — gives a fixed
-interval instead. Invalid ranges (inverted or non-positive) are rejected at
-startup rather than silently clamped.
-
-Note that each run constructs fresh API clients, so both access tokens are
-re-exchanged every sync. That is fine at intervals of a few minutes; if you want
-to poll considerably more often, cache the clients across runs first.
 
 ## Security
 
@@ -178,13 +257,16 @@ This repo is public; the deployment is not. Things worth knowing:
   written to disk at runtime, and `.env` is gitignored. Never commit real values
   — put them in Railway's service variables.
 - **A Railway service is reachable from the public internet.** Only `/health` is
-  anonymous, and it returns nothing but liveness — no calendar address, no
-  workout titles, no error text. `/status` and `/sync` require `SYNC_API_TOKEN`,
-  compared in constant time, and **fail closed**: if the token is unset they
-  refuse every request rather than falling open.
-- **Upstream error text is never returned over HTTP.** A failed `/sync` responds
-  with a fixed message and logs the detail for the operator, so API error bodies
-  cannot leak to a caller.
+  anonymous, and it returns nothing but liveness — no tool names, no calendar
+  address, no workout titles, no error text. Everything else requires
+  `CRONKIT_API_TOKEN`, compared in constant time, and **fails closed**: if the
+  token is unset those endpoints refuse every request rather than falling open.
+  Authorization is checked before the tool is looked up, so an anonymous caller
+  cannot even learn which tools exist.
+- **Upstream error text is never returned over HTTP.** A failed run responds with
+  a fixed message and logs the detail for the operator, so API error bodies
+  cannot leak to a caller. A tool's `status()` is served to authorized callers,
+  so it must return settings only — never a credential.
 - **Pruning is scoped by a private property.** Deletion only ever considers
   events tagged `schedulesync=1`, so a bug cannot reach the rest of your
   calendar.
@@ -204,3 +286,7 @@ pip install -e ".[dev]"
 pytest
 ruff check .
 ```
+
+Tests mirror the source layout: `tests/core/` for the framework, `tests/tools/`
+for individual tools. `tests/conftest.py` provides a `fake_tool_cls` fixture for
+exercising the framework without touching a real upstream API.

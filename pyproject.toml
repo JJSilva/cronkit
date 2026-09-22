@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "schedulesync"
-version = "0.1.0"
-description = "Sync timed TrainingPeaks workouts into Google Calendar"
+name = "cronkit"
+version = "0.2.0"
+description = "A small cron daemon that runs a set of personal tools on a schedule"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -25,10 +25,10 @@ dev = [
 ]
 
 [project.scripts]
-schedulesync = "schedulesync.cli:main"
+cronkit = "cronkit.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/schedulesync"]
+packages = ["src/cronkit"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

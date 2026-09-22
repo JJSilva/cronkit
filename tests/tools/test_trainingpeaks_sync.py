@@ -5,11 +5,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from schedulesync import sync as sync_module
-from schedulesync.config import Config
-from schedulesync.gcal import SyncedEvent, event_id_for
-from schedulesync.sync import event_window, needs_update, run_sync
-from schedulesync.trainingpeaks import Workout
+from cronkit.tools.trainingpeaks_calendar import sync as sync_module
+from cronkit.tools.trainingpeaks_calendar.config import CalendarSyncConfig
+from cronkit.tools.trainingpeaks_calendar.gcal import SyncedEvent, event_id_for
+from cronkit.tools.trainingpeaks_calendar.sync import event_window, needs_update, run_sync
+from cronkit.tools.trainingpeaks_calendar.trainingpeaks import Workout
 
 TZ = ZoneInfo("America/Los_Angeles")
 
@@ -169,7 +169,7 @@ class FakeCalendar:
 
 @pytest.fixture
 def config():
-    return Config(
+    return CalendarSyncConfig(
         tp_auth_cookie="cookie",
         google_client_id="id",
         google_client_secret="secret",

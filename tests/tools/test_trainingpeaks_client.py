@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from schedulesync.trainingpeaks import parse_workout, sport_from_type_value
+from cronkit.tools.trainingpeaks_calendar.trainingpeaks import parse_workout, sport_from_type_value
 
 
 def raw(**overrides):

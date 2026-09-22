@@ -3,7 +3,7 @@
 
 Run this once on your laptop. It opens a browser, asks you to grant calendar
 access to the account that owns the target calendar, and prints the refresh
-token to paste into Railway as GOOGLE_REFRESH_TOKEN.
+token to paste into Railway as TP_CALENDAR_GOOGLE_REFRESH_TOKEN.
 
 Prerequisites (Google Cloud Console, one time):
   1. Create or pick a project.
@@ -160,9 +160,9 @@ def main() -> int:
         return 1
 
     print("\nSuccess. Set these on your Railway service:\n")
-    print(f"  GOOGLE_CLIENT_ID={args.client_id}")
-    print(f"  GOOGLE_CLIENT_SECRET={args.client_secret}")
-    print(f"  GOOGLE_REFRESH_TOKEN={refresh_token}")
+    print(f"  TP_CALENDAR_GOOGLE_CLIENT_ID={args.client_id}")
+    print(f"  TP_CALENDAR_GOOGLE_CLIENT_SECRET={args.client_secret}")
+    print(f"  TP_CALENDAR_GOOGLE_REFRESH_TOKEN={refresh_token}")
     return 0
 
 
