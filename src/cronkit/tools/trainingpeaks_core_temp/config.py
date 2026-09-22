@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from cronkit.core import env
+from cronkit.core import clock, env
 from cronkit.tools.trainingpeaks_core_temp.fit import from_fahrenheit, to_fahrenheit
 from cronkit.tools.trainingpeaks_core_temp.report import ReportOptions
 
@@ -24,6 +24,10 @@ class CoreTempConfig:
     # How many days back from today to consider. 1 is today only; raise it so a
     # late-night session that uploads after midnight is still picked up.
     lookback_days: int = 1
+
+    # IANA zone that decides what "today" is; see cronkit.core.clock. Blank
+    # means the host's own zone, which on Railway is UTC.
+    timezone: str = ""
 
     # Report the readings in Fahrenheit. The sensor records Celsius; set
     # TP_CORE_UNITS=C to see it unconverted.
@@ -63,6 +67,7 @@ class CoreTempConfig:
         values: dict[str, Any] = {
             "tp_auth_cookie": env.require("TP_CORE_AUTH_COOKIE", "TP_CALENDAR_AUTH_COOKIE", "TP_AUTH_COOKIE"),
             "lookback_days": env.integer("TP_CORE_LOOKBACK_DAYS", default=1),
+            "timezone": clock.timezone_from_env("TP_CORE_TIMEZONE"),
             "fahrenheit": fahrenheit,
             "threshold_c": threshold_c,
             "interval_minutes": env.number("TP_CORE_INTERVAL_MINUTES", default=5.0),
@@ -75,6 +80,7 @@ class CoreTempConfig:
         """Non-secret settings, safe to serve over the API."""
         return {
             "lookback_days": self.lookback_days,
+            "timezone": self.timezone or "(host default)",
             "units": "F" if self.fahrenheit else "C",
             "threshold": round(to_fahrenheit(self.threshold_c), 1) if self.fahrenheit else self.threshold_c,
             "interval_minutes": self.interval_minutes,

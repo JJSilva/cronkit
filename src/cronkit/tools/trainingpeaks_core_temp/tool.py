@@ -7,7 +7,8 @@ comment.
 
 Business rules, in the order they apply:
 
-1. Look at completed workouts in a rolling window ending today.
+1. Look at completed workouts in a rolling window ending today, in the
+   configured timezone.
 2. Skip any whose comment already carries the report block — that is the whole
    "has this been processed" check, and it is why there is no database.
 3. Skip any with no device upload.
@@ -20,9 +21,10 @@ Business rules, in the order they apply:
 
 import argparse
 import logging
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Any
 
+from cronkit.core import clock
 from cronkit.core.tool import Tool, ToolResult
 from cronkit.integrations.trainingpeaks import TrainingPeaksClient, Workout
 from cronkit.tools.trainingpeaks_core_temp.config import CoreTempConfig
@@ -76,7 +78,7 @@ class TrainingPeaksCoreTempTool(Tool):
         return self.config.status()
 
     async def run(self, *, dry_run: bool = False) -> ToolResult:
-        end_day = date.today()
+        end_day = clock.today(self.config.timezone)
         start_day = end_day - timedelta(days=max(self.config.lookback_days - 1, 0))
 
         annotated: list[str] = []

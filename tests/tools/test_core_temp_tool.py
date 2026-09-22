@@ -269,3 +269,29 @@ def test_the_calendar_tools_cookie_is_reused(monkeypatch):
     monkeypatch.setenv("TP_AUTH_COOKIE", "shared")
 
     assert CoreTempConfig.from_env().tp_auth_cookie == "shared"
+
+
+async def test_the_window_is_the_athletes_today_not_the_containers(monkeypatch, core_bytes):
+    """In UTC, "today" rolls over at 5pm Pacific and would miss an evening ride."""
+    fake = FakeTP([], core_bytes)
+    windows: list[tuple[date, date]] = []
+
+    async def workouts(start, end):
+        windows.append((start, end))
+        return []
+
+    fake.workouts = workouts
+    wire(monkeypatch, fake)
+    monkeypatch.setattr(tool_module.clock, "today", lambda tz: TODAY if tz == "America/Los_Angeles" else None)
+
+    await make_tool(timezone="America/Los_Angeles").run()
+
+    assert windows == [(TODAY, TODAY)]
+
+
+def test_the_shared_timezone_configures_this_tool(monkeypatch):
+    monkeypatch.setenv("TP_CORE_AUTH_COOKIE", "cookie")
+    monkeypatch.delenv("TP_CORE_TIMEZONE", raising=False)
+    monkeypatch.setenv("CRONKIT_TIMEZONE", "America/Los_Angeles")
+
+    assert CoreTempConfig.from_env().timezone == "America/Los_Angeles"

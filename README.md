@@ -11,6 +11,7 @@ now the first tool.
 | --- | --- |
 | `trainingpeaks-calendar` | Syncs timed TrainingPeaks workouts into a Google Calendar |
 | `trainingpeaks-core-temp` | Posts CORE body-temperature data into TrainingPeaks post-activity comments |
+| `strava-rename` | Gives default-named Strava activities ("Morning Run") their TrainingPeaks workout title |
 
 To add another, see **[docs/adding-a-tool.md](docs/adding-a-tool.md)**.
 
@@ -34,6 +35,7 @@ src/cronkit/
     __init__.py                registers every tool
     trainingpeaks_calendar/    tool #1: config, sync rules, Google Calendar client
     trainingpeaks_core_temp/   tool #2: config, FIT parsing, comment formatting
+    strava_rename/             tool #3: config, Strava client, pairing and default-name rules
 ```
 
 Three properties the design leans on:
@@ -78,6 +80,7 @@ cronkit list                                   # what's registered, and is it co
 cronkit run trainingpeaks-calendar --dry-run   # preview one tool
 cronkit run trainingpeaks-calendar --days 60   # tools can add their own flags
 cronkit run trainingpeaks-core-temp --dry-run
+cronkit run strava-rename --dry-run --days 7   # preview a week of renames
 cronkit run-all                                # every configured tool, once
 cronkit serve                                  # the scheduled daemon (what Railway starts)
 ```
@@ -96,6 +99,7 @@ local runs, or set the same keys as Railway service variables.
 | `CRONKIT_DASHBOARD_PASSWORD` | for the dashboard | — | Password for the sign-in form at `/` |
 | `CRONKIT_TOOLS` | no | all | Comma-separated list of tools to load |
 | `CRONKIT_RUN_ON_START` | no | `true` | Run each tool once at startup rather than waiting out the first interval |
+| `CRONKIT_TIMEZONE` | recommended | host's | IANA zone that decides what "today" is for every tool, e.g. `America/Los_Angeles` |
 | `PORT` | no | `8000` | Port the HTTP server binds; Railway sets this |
 
 Every tool also gets, from its prefix:
@@ -106,6 +110,11 @@ Every tool also gets, from its prefix:
 | `<PREFIX>_INTERVAL_MIN_MINUTES` | = above | Lower bound of the randomised cadence |
 | `<PREFIX>_INTERVAL_MAX_MINUTES` | = above | Upper bound |
 | `<PREFIX>_ENABLED` | `true` | `false` loads the tool but never schedules it |
+| `<PREFIX>_TIMEZONE` | `CRONKIT_TIMEZONE` | Overrides the shared zone for one tool |
+
+> **Set `CRONKIT_TIMEZONE`.** The container runs in UTC, where "today" rolls
+> over at 5pm Pacific. Every tool windows its work by day, so without it an
+> evening session drops out of "today" before it has been handled.
 
 Each wait is drawn uniformly from `[min, max]`, so a tool does not poll on an
 exact schedule. Equal bounds give a fixed interval. Invalid ranges (inverted or
@@ -236,7 +245,7 @@ expired cookie; capture a fresh value and update the Railway variable.
 | `TP_CALENDAR_GOOGLE_REFRESH_TOKEN` | yes | — | From the setup script |
 | `TP_CALENDAR_GOOGLE_CALENDAR_ID` | no | `primary` | Target calendar, e.g. `you@gmail.com` |
 | `TP_CALENDAR_DAYS` | no | `21` | How many days ahead to sync |
-| `TP_CALENDAR_TIMEZONE` | no | calendar's own | IANA zone for planned start times |
+| `TP_CALENDAR_TIMEZONE` | no | `CRONKIT_TIMEZONE`, then the calendar's own | IANA zone for planned start times and for "today" |
 | `TP_CALENDAR_PRUNE` | no | `true` | Remove events whose workout lost its time |
 | `TP_CALENDAR_INTERVAL_*_MINUTES` | no | `60` | Cadence — see the table above |
 
@@ -334,6 +343,7 @@ depends on it.
 | --- | --- | --- | --- |
 | `TP_CORE_AUTH_COOKIE` | no | calendar tool's | TrainingPeaks cookie; falls back to `TP_CALENDAR_AUTH_COOKIE`, then `TP_AUTH_COOKIE` |
 | `TP_CORE_LOOKBACK_DAYS` | no | `1` | Days back to consider; `1` is today only |
+| `TP_CORE_TIMEZONE` | no | `CRONKIT_TIMEZONE` | IANA zone that decides "today" |
 | `TP_CORE_UNITS` | no | `F` | `F` or `C` for the reported temperatures |
 | `TP_CORE_THRESHOLD` | no | `100.4` | Core temp at or above which time is counted, in the unit above |
 | `TP_CORE_INTERVAL_MINUTES` | no | `5` | Bucket size for the table |
@@ -357,6 +367,97 @@ device serial numbers and GPS coordinates.
 ```bash
 python tests/fixtures/make_core_fit.py
 ```
+
+---
+
+# Tool: `strava-rename`
+
+Gives a Strava activity the title of the TrainingPeaks workout it was recorded
+for — but only while it still has a name a machine chose. "Morning Run" becomes
+"Longish Run"; "Surf City 10k", which you typed yourself, is never touched.
+
+Each run:
+
+1. Lists completed TrainingPeaks workouts for today, in the configured timezone.
+2. Lists Strava activities around the same window.
+3. Pairs them by start time and sport.
+4. Renames each paired activity whose Strava name is a default and whose
+   TrainingPeaks title is not.
+
+## How pairing works
+
+Both services read the start time from the same device file, so a genuine pair
+starts within a second or two — observed live, the worst case was one second.
+`STRAVA_RENAME_TOLERANCE_MINUTES` (default `2`) absorbs that without ever
+pairing two different sessions. Sport is also checked, so the run and ride of a
+brick, recorded a couple of minutes apart, cannot be crossed. Where two workouts
+compete for one activity, the closer start wins.
+
+## What counts as a default name
+
+- Strava's own: a time of day plus a sport — `Morning Run`, `Lunch Swim`,
+  `Evening Weight Training`, and so on. Anything longer (`Morning Run with the
+  club`) is treated as yours.
+- A device's bare sport name: `Running`, `Road Cycling`, `Lap Swimming`, …
+- Anything matching `STRAVA_RENAME_DEFAULT_NAME_PATTERNS` — regexes separated
+  by `;;`, e.g. `^Zwift - ` to let Zwift's names be replaced too.
+
+The same test applies to the TrainingPeaks side. An unplanned upload lands in
+TrainingPeaks titled `Running`, and copying that over `Morning Run` would be no
+improvement, so those pairs are skipped.
+
+## Why there is no "processed" database
+
+The default-name rule *is* the processed check. Once renamed, an activity has a
+real title and never qualifies again; and anything you rename by hand in Strava
+always wins, on the next run and every run after. Only the `name` field is sent
+— description, gear, privacy and everything else are left as they are.
+
+## Setup
+
+### 1. A Strava API application
+
+At <https://www.strava.com/settings/api>, once:
+
+1. Create an application. Name, category and website can be anything.
+2. Set **Authorization Callback Domain** to `localhost`.
+3. Note the **Client ID** and **Client Secret**.
+
+### 2. A refresh token
+
+On your laptop:
+
+```bash
+python scripts/strava_oauth_setup.py --client-id YOUR_CLIENT_ID --client-secret YOUR_CLIENT_SECRET
+```
+
+Approve access with **both** activity boxes ticked — viewing private activities
+(`activity:read_all`) and editing them (`activity:write`). The script checks the
+granted scopes and prints the three `STRAVA_RENAME_*` values to set on Railway.
+
+> Strava can issue a new refresh token when it refreshes an access token. The
+> tool keeps the newest one in memory and logs a warning when that happens; if
+> you see it, update `STRAVA_RENAME_REFRESH_TOKEN` before the next redeploy.
+> When the token is rejected outright, `/status` shows an error naming the
+> script to rerun.
+
+### 3. Configure
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `STRAVA_RENAME_CLIENT_ID` | yes | — | Strava API application Client ID |
+| `STRAVA_RENAME_CLIENT_SECRET` | yes | — | Strava API application Client Secret |
+| `STRAVA_RENAME_REFRESH_TOKEN` | yes | — | From the setup script |
+| `STRAVA_RENAME_TIMEZONE` | no | `CRONKIT_TIMEZONE` | IANA zone that decides "today" |
+| `STRAVA_RENAME_TP_AUTH_COOKIE` | no | shared | TrainingPeaks cookie; falls back to the other tools' |
+| `STRAVA_RENAME_LOOKBACK_DAYS` | no | `1` | Days back to consider; `1` is today only |
+| `STRAVA_RENAME_TOLERANCE_MINUTES` | no | `2` | Maximum start-time gap for a pair |
+| `STRAVA_RENAME_DEFAULT_NAME_PATTERNS` | no | — | Extra default-name regexes, `;;`-separated |
+| `STRAVA_RENAME_INTERVAL_*_MINUTES` | no | `30` | Cadence — see the table above |
+
+Strava allows 100 read requests per 15 minutes. A run costs one token refresh,
+one list call and one call per rename, so any cadence down to a few minutes is
+comfortably inside that.
 
 ---
 

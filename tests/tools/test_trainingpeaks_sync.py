@@ -298,3 +298,29 @@ async def test_one_failing_workout_does_not_abort_the_run(monkeypatch, config):
     assert result.created == ["2026-09-16 Good"]
     assert len(result.errors) == 1
     assert "Bad" in result.errors[0]
+
+
+async def test_the_window_starts_on_the_calendars_today_not_utcs(monkeypatch, config):
+    """At 11:30pm Pacific it is already tomorrow in UTC; tonight's workout must stay in the window."""
+    from datetime import UTC
+
+    class EveningInLA(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 9, 23, 6, 30, tzinfo=UTC).astimezone(tz)
+
+    class UtcDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 9, 23)  # what a UTC container reports at that moment
+
+    tonight = workout(id="1", day=date(2026, 9, 22), planned_start=datetime(2026, 9, 22, 23, 45))
+    cal = FakeCalendar()
+    wire(monkeypatch, FakeTP([tonight]), cal)
+    monkeypatch.setattr(sync_module, "datetime", EveningInLA)
+    monkeypatch.setattr(sync_module, "date", UtcDate)
+
+    result = await run_sync(config)
+
+    assert result.window_start == date(2026, 9, 22)
+    assert [event_id for event_id, _ in cal.upserts] == ["tpplan1"]

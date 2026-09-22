@@ -18,7 +18,7 @@ src/cronkit/tools/my_tool/
 
 Put the upstream API client in the tool's own package. When a *second* tool
 needs the same client, move it to `src/cronkit/integrations/` — that is what
-`integrations/trainingpeaks.py` is, shared by the calendar and core-temp tools.
+`integrations/trainingpeaks.py` is, shared by all three TrainingPeaks-reading tools.
 Nothing in `cronkit/core/` should ever import from `cronkit/tools/`.
 
 ## 2. Write the config

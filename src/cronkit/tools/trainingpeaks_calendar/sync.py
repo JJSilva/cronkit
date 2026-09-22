@@ -136,9 +136,6 @@ def _resolve_timezone(name: str) -> ZoneInfo:
 
 async def run_sync(config: CalendarSyncConfig, *, dry_run: bool = False, today: date | None = None) -> SyncResult:
     """Run one full sync pass and return what happened."""
-    start_day = today or date.today()
-    end_day = start_day + timedelta(days=config.sync_days)
-
     async with (
         TrainingPeaksClient(config.tp_auth_cookie) as tp,
         CalendarClient(
@@ -150,6 +147,11 @@ async def run_sync(config: CalendarSyncConfig, *, dry_run: bool = False, today: 
     ):
         tz_name = config.timezone or await gcal.calendar_timezone()
         tz = _resolve_timezone(tz_name)
+
+        # "Today" is the athlete's, not the container's: in UTC it rolls over at
+        # 5pm Pacific, which would drop tonight's workouts out of the window.
+        start_day = today or datetime.now(tz).date()
+        end_day = start_day + timedelta(days=config.sync_days)
         result = SyncResult(window_start=start_day, window_end=end_day, timezone=tz_name, dry_run=dry_run)
 
         workouts = await tp.workouts(start_day, end_day)

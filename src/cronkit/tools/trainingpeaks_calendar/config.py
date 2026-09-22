@@ -12,7 +12,7 @@ resolved from ``TP_CALENDAR_INTERVAL_*`` (or the legacy ``SYNC_INTERVAL_*``).
 from dataclasses import dataclass
 from typing import Any
 
-from cronkit.core import env
+from cronkit.core import clock, env
 
 
 @dataclass(frozen=True)
@@ -35,8 +35,8 @@ class CalendarSyncConfig:
     # Rolling sync window: [today, today + sync_days].
     sync_days: int = 21
 
-    # IANA zone for interpreting TrainingPeaks' naive planned start times.
-    # When empty, the target calendar's own timezone is used.
+    # IANA zone for interpreting TrainingPeaks' naive planned start times, and
+    # for deciding what "today" is. When empty, the calendar's own zone is used.
     timezone: str = ""
 
     # Remove previously-synced events whose workout no longer has a planned time
@@ -57,7 +57,7 @@ class CalendarSyncConfig:
             "google_refresh_token": env.require("TP_CALENDAR_GOOGLE_REFRESH_TOKEN", "GOOGLE_REFRESH_TOKEN"),
             "calendar_id": env.optional("TP_CALENDAR_GOOGLE_CALENDAR_ID", "CALENDAR_ID", default="primary"),
             "sync_days": env.integer("TP_CALENDAR_DAYS", "SYNC_DAYS", default=21),
-            "timezone": env.optional("TP_CALENDAR_TIMEZONE", "SYNC_TIMEZONE"),
+            "timezone": clock.timezone_from_env("TP_CALENDAR_TIMEZONE", "SYNC_TIMEZONE"),
             "prune": env.flag("TP_CALENDAR_PRUNE", "SYNC_PRUNE", default=True),
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
