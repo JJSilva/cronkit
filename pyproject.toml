@@ -43,3 +43,8 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# dashboard.py is mostly an HTML/JS template string; its line lengths are the
+# markup's, not Python's.
+"src/cronkit/core/dashboard.py" = ["E501"]

@@ -58,8 +58,10 @@ def test_health_leaks_nothing_about_the_tools(client):
         assert leaky not in body
 
 
-def test_root_matches_health(client):
-    assert client.get("/").json() == {"status": "ok"}
+def test_root_serves_the_dashboard_not_health(client):
+    """`/` became the dashboard; Railway's healthcheck uses /health."""
+    response = client.get("/")
+    assert response.headers["content-type"].startswith("text/html")
 
 
 def test_health_still_works_when_no_token_is_configured(tool_cls):

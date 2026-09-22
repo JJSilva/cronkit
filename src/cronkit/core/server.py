@@ -1,35 +1,39 @@
-"""The HTTP surface: a health endpoint for the platform, plus tool control.
+"""The HTTP surface: a dashboard, a health endpoint, and tool control.
 
 Railway's healthcheck needs something listening on ``$PORT``, so the scheduler
 runs as background tasks alongside a tiny Starlette app.
 
 Security note: a Railway service is reachable from the public internet. Only
 ``/health`` is anonymous, and it deliberately returns nothing but liveness — no
-tool names, no calendar address, no error text. Everything revealing sits behind
-``CRONKIT_API_TOKEN``.
+tool names, no calendar address, no error text. Everything else needs either
+``CRONKIT_API_TOKEN`` (for scripts) or a dashboard session from
+``CRONKIT_DASHBOARD_PASSWORD``. Both fail closed when unset.
 
 Routes
 ------
-``GET  /``, ``GET /health``     anonymous liveness
+``GET  /``                      the dashboard, or the password form
+``POST /login`` ``/logout``     dashboard session
+``GET  /health``                anonymous liveness
 ``GET  /status``                daemon + every tool's state
-``GET  /tools``                 the loaded tools and their schedules
-``GET  /tools/{name}``          one tool's state
+``GET  /api/logs``              the in-memory log tail
+``GET  /tools`` ``/tools/{n}``  the loaded tools
 ``POST /tools/{name}/run``      run one tool now (``?dry_run=1`` to preview)
 ``POST /sync``                  deprecated alias for the calendar tool
 """
 
 import logging
-import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from cronkit.core.config import DaemonConfig
+from cronkit.core import auth, dashboard, logbuffer
 from cronkit.core.daemon import Daemon, ToolRunner, ToolUnavailableError
+from cronkit.core.logbuffer import LogBuffer
 
 logger = logging.getLogger(__name__)
 
@@ -38,54 +42,85 @@ logger = logging.getLogger(__name__)
 LEGACY_SYNC_TOOL = "trainingpeaks-calendar"
 
 
-def _presented_token(request: Request) -> str:
-    """Pull the caller's token from either supported header."""
-    header = request.headers.get("authorization", "")
-    scheme, _, value = header.partition(" ")
-    if scheme.lower() == "bearer" and value:
-        return value.strip()
-    # X-Sync-Token is the pre-cronkit header name, still accepted.
-    return (request.headers.get("x-cronkit-token") or request.headers.get("x-sync-token") or "").strip()
-
-
-def is_authorized(request: Request, expected: str) -> bool:
-    """Constant-time check of the caller's token.
-
-    Fails closed: with no token configured there is no way to authorize, so the
-    protected endpoints stay shut rather than falling open to the internet.
-    """
-    if not expected:
-        return False
-    presented = _presented_token(request)
-    if not presented:
-        return False
-    return secrets.compare_digest(presented, expected)
-
-
-def create_app(daemon: Daemon | None = None) -> Starlette:
-    """Build the ASGI app with its background sync loops."""
+def create_app(daemon: Daemon | None = None, *, logs: LogBuffer | None = None) -> Starlette:
+    """Build the ASGI app with its background loops and its dashboard."""
     daemon = daemon or Daemon.from_env()
+    logs = logs if logs is not None else logbuffer.install()
     token = daemon.config.api_token
+    password = daemon.config.dashboard_password
 
-    if not token:
+    if not token and not password:
         logger.warning(
-            "CRONKIT_API_TOKEN is not set: every endpoint except /health will refuse "
-            "every request. Set it to enable them."
+            "Neither CRONKIT_API_TOKEN nor CRONKIT_DASHBOARD_PASSWORD is set: every "
+            "endpoint except /health will refuse every request."
         )
 
     def _deny() -> JSONResponse:
-        # Identical response whether the token is absent, wrong, or unconfigured,
-        # so probing cannot distinguish the cases.
+        # Identical response whether the credential is absent, wrong, or
+        # unconfigured, so probing cannot distinguish the cases.
         return JSONResponse({"status": "unauthorized"}, status_code=401)
+
+    def _authorized(request: Request) -> bool:
+        return auth.is_authorized(request, token=token, password=password)
 
     def _resolve(request: Request, name: str | None = None) -> ToolRunner | JSONResponse:
         """Authorize, then look up the requested tool."""
-        if not is_authorized(request, token):
+        if not _authorized(request):
             return _deny()
         runner = daemon.runner(name or request.path_params["name"])
         if runner is None:
             return JSONResponse({"status": "not_found", "message": "No such tool."}, status_code=404)
         return runner
+
+    def _secure_cookie(response: Response, name: str, value: str, *, max_age: int) -> None:
+        # Secure is safe to set unconditionally: Railway terminates TLS, and a
+        # local http:// run still works because browsers exempt localhost.
+        response.set_cookie(
+            name,
+            value,
+            max_age=max_age,
+            httponly=name == auth.SESSION_COOKIE,
+            secure=True,
+            samesite="strict",
+            path="/",
+        )
+
+    # --- the dashboard -----------------------------------------------------
+
+    async def index(request: Request) -> Response:
+        if not password:
+            return HTMLResponse(dashboard.login_page("No dashboard password is configured."), status_code=503)
+        if not auth.session_is_valid(password, request.cookies.get(auth.SESSION_COOKIE)):
+            return HTMLResponse(dashboard.login_page(), status_code=401)
+
+        csrf = request.cookies.get(auth.CSRF_COOKIE) or auth.issue_csrf()
+        response = HTMLResponse(dashboard.dashboard_page(csrf))
+        _secure_cookie(response, auth.CSRF_COOKIE, csrf, max_age=auth.DEFAULT_SESSION_HOURS * 3600)
+        return response
+
+    async def login(request: Request) -> Response:
+        # Parsed by hand rather than via request.form(), which would drag in
+        # python-multipart for a single urlencoded field.
+        body = (await request.body()).decode("utf-8", "replace")
+        presented = (parse_qs(body).get("password") or [""])[0]
+        if not auth.password_is_correct(password, presented):
+            logger.warning("Failed dashboard sign-in from %s", request.client.host if request.client else "?")
+            return HTMLResponse(dashboard.login_page("Incorrect password."), status_code=401)
+
+        response = RedirectResponse("/", status_code=303)
+        _secure_cookie(response, auth.SESSION_COOKIE, auth.issue_session(password),
+                       max_age=auth.DEFAULT_SESSION_HOURS * 3600)
+        _secure_cookie(response, auth.CSRF_COOKIE, auth.issue_csrf(),
+                       max_age=auth.DEFAULT_SESSION_HOURS * 3600)
+        return response
+
+    async def logout(_: Request) -> Response:
+        response = RedirectResponse("/", status_code=303)
+        response.delete_cookie(auth.SESSION_COOKIE, path="/")
+        response.delete_cookie(auth.CSRF_COOKIE, path="/")
+        return response
+
+    # --- the API -----------------------------------------------------------
 
     async def health(_: Request) -> JSONResponse:
         # Anonymous and deliberately empty of detail. It reports that the process
@@ -97,12 +132,21 @@ def create_app(daemon: Daemon | None = None) -> Starlette:
         return JSONResponse({"status": "ok"})
 
     async def status(request: Request) -> JSONResponse:
-        if not is_authorized(request, token):
+        if not _authorized(request):
             return _deny()
         return JSONResponse(daemon.status())
 
+    async def api_logs(request: Request) -> JSONResponse:
+        if not _authorized(request):
+            return _deny()
+        try:
+            limit = min(int(request.query_params.get("limit", "300")), 1000)
+        except ValueError:
+            limit = 300
+        return JSONResponse({"records": logs.records(limit=limit, level=request.query_params.get("level"))})
+
     async def list_tools(request: Request) -> JSONResponse:
-        if not is_authorized(request, token):
+        if not _authorized(request):
             return _deny()
         return JSONResponse(
             {
@@ -126,6 +170,13 @@ def create_app(daemon: Daemon | None = None) -> Starlette:
         return JSONResponse({"status": "ok", **resolved.status()})
 
     async def _run(request: Request, runner: ToolRunner) -> JSONResponse:
+        # A session-authenticated write needs CSRF cover; a token caller sets a
+        # header no cross-site form can, so it is already immune.
+        if not auth.token_is_valid(request, token) and not auth.csrf_is_valid(
+            request, request.headers.get("x-csrf-token")
+        ):
+            return JSONResponse({"status": "forbidden", "message": "Bad CSRF token."}, status_code=403)
+
         dry_run = request.query_params.get("dry_run", "").lower() in {"1", "true", "yes"}
         try:
             result = await runner.run_once(dry_run=dry_run)
@@ -167,9 +218,12 @@ def create_app(daemon: Daemon | None = None) -> Starlette:
 
     return Starlette(
         routes=[
-            Route("/", health),
+            Route("/", index),
+            Route("/login", login, methods=["POST"]),
+            Route("/logout", logout, methods=["POST"]),
             Route("/health", health),
             Route("/status", status),
+            Route("/api/logs", api_logs),
             Route("/tools", list_tools),
             Route("/tools/{name}", tool_status),
             Route("/tools/{name}/run", run_tool, methods=["POST"]),
@@ -177,8 +231,3 @@ def create_app(daemon: Daemon | None = None) -> Starlette:
         ],
         lifespan=lifespan,
     )
-
-
-def create_app_from_env(config: DaemonConfig | None = None) -> Starlette:
-    """Entry point for ``uvicorn cronkit.core.server:create_app_from_env --factory``."""
-    return create_app(Daemon.from_env(config))

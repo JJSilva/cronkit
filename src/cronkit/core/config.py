@@ -16,9 +16,13 @@ from cronkit.core import env
 class DaemonConfig:
     """Resolved configuration for the daemon itself."""
 
-    #: Shared secret guarding every endpoint except ``/health``. A Railway
-    #: service is public, so without this those endpoints refuse every request.
+    #: Shared secret for scripted callers, sent as a bearer token. A Railway
+    #: service is public, so without this the API refuses every request.
     api_token: str = ""
+
+    #: Password for the dashboard's sign-in form. Unset means the dashboard
+    #: refuses everyone; it is never left open.
+    dashboard_password: str = ""
 
     #: Port the HTTP server binds. Railway sets ``PORT``.
     port: int = 8000
@@ -35,6 +39,7 @@ class DaemonConfig:
             # SYNC_API_TOKEN is the pre-cronkit name, still honoured so a live
             # deployment does not lock itself out on upgrade.
             api_token=env.optional("CRONKIT_API_TOKEN", "SYNC_API_TOKEN"),
+            dashboard_password=env.optional("CRONKIT_DASHBOARD_PASSWORD"),
             port=env.integer("PORT", default=8000),
             tools=env.csv_list("CRONKIT_TOOLS"),
             run_on_start=env.flag("CRONKIT_RUN_ON_START", default=True),

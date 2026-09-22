@@ -53,6 +53,10 @@ def to_fahrenheit(celsius: float) -> float:
     return celsius * 9 / 5 + 32
 
 
+def from_fahrenheit(fahrenheit: float) -> float:
+    return (fahrenheit - 32) * 5 / 9
+
+
 @dataclass(frozen=True)
 class CoreSample:
     """One CORE reading."""

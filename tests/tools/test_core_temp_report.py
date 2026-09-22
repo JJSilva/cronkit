@@ -40,25 +40,31 @@ def test_the_block_is_delimited_at_both_ends():
 
 
 def test_the_summary_reports_every_channel():
+    """Readings are Fahrenheit by default; the sensor's Celsius is converted."""
     report = build_report(series(36.0, 38.0))
-    assert "Core  avg 37.0 / min 36.0 / max 38.0 °C" in report
-    assert "Skin  avg 32.0 / max 32.0 °C" in report
+    assert "Core  avg 98.6 / min 96.8 / max 100.4 °F" in report
+    assert "Skin  avg 89.6 / max 89.6 °F" in report
     assert "HSI   avg 2.0 / max 2.0" in report
+
+
+def test_celsius_is_still_available():
+    report = build_report(series(36.0, 38.0), ReportOptions(fahrenheit=False))
+    assert "Core  avg 37.0 / min 36.0 / max 38.0 °C" in report
 
 
 def test_time_above_the_threshold_is_reported_with_a_share():
     report = build_report(series(39.0, 39.0, 36.0), ReportOptions(threshold_c=38.0))
-    assert "Above 38.0 °C: 2m00s (100%)" in report
+    assert "Above 100.4 °F: 2m00s (100%)" in report
 
 
 def test_no_time_above_the_threshold_says_so_plainly():
-    assert "Above 38.0 °C: none" in build_report(series(36.0, 36.5))
+    assert "Above 100.4 °F: none" in build_report(series(36.0, 36.5))
 
 
-def test_fahrenheit_converts_the_summary_and_the_threshold():
-    report = build_report(series(37.0), ReportOptions(fahrenheit=True))
-    assert "98.6 °F" in report
-    assert "Above 100.4 °F" in report
+def test_the_threshold_is_shown_in_the_display_unit():
+    """It is held in Celsius internally; the reader should never see that."""
+    assert "Above 38.0 °C" in build_report(series(36.0), ReportOptions(fahrenheit=False))
+    assert "Above 100.4 °F" in build_report(series(36.0), ReportOptions(fahrenheit=True))
 
 
 def test_summary_only_leaves_out_the_table():
@@ -78,6 +84,13 @@ def test_sub_minute_buckets_get_a_seconds_column():
     report = build_report(series(*[37.0] * 4, step_seconds=10), ReportOptions(interval=timedelta(seconds=20)))
     rows = [line.split()[0] for line in report.splitlines() if line.startswith("0:")]
     assert rows == ["0:00:00", "0:00:20"]
+
+
+def test_the_table_columns_line_up_in_fahrenheit():
+    """Fahrenheit runs to three digits where Celsius takes two."""
+    report = build_report(series(36.0, 39.0, step_seconds=300), ReportOptions(interval=timedelta(minutes=5)))
+    rows = [ln for ln in report.splitlines() if ln.startswith(("Time", "0:"))]
+    assert len({len(ln) for ln in rows}) == 1, rows
 
 
 def test_an_empty_series_is_refused():

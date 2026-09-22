@@ -101,11 +101,16 @@ def _cmd_run_all(args: argparse.Namespace) -> int:
 def _cmd_serve(_: argparse.Namespace) -> int:
     import uvicorn
 
+    from cronkit.core import logbuffer
     from cronkit.core.daemon import Daemon
     from cronkit.core.server import create_app
 
     config = DaemonConfig.from_env()
-    uvicorn.run(create_app(Daemon.from_env(config)), host="0.0.0.0", port=config.port, log_level="info")
+    # Installed before the daemon starts so the dashboard's log pane catches the
+    # very first run rather than starting blank.
+    logs = logbuffer.install()
+    app = create_app(Daemon.from_env(config), logs=logs)
+    uvicorn.run(app, host="0.0.0.0", port=config.port, log_level="info")
     return 0
 
 

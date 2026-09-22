@@ -49,7 +49,7 @@ def _duration(delta: timedelta) -> str:
 class ReportOptions:
     """How to render the block."""
 
-    fahrenheit: bool = False
+    fahrenheit: bool = True
     threshold_c: float = 38.0
     interval: timedelta = timedelta(minutes=5)
     include_series: bool = True
@@ -121,15 +121,27 @@ def _series_lines(series: CoreSeries, opts: ReportOptions) -> list[str]:
     if not rows:
         return []
 
+    # Column widths come from the data: Fahrenheit readings run to three digits
+    # where Celsius takes two, and a hardcoded width would ragged the table.
     fine = opts.interval % timedelta(minutes=1) != timedelta(0)
-    width = 8 if fine else 6
-    lines = [f"{'Time':<{width}} Core  Skin   HSI"]
-    for elapsed, sample in rows:
-        core = f"{opts.temp(sample.core_c):.1f}"
-        skin = f"{opts.temp(sample.skin_c):.1f}" if sample.skin_c is not None else "-"
-        strain = f"{sample.heat_strain:.1f}" if sample.heat_strain is not None else "-"
-        lines.append(f"{_elapsed(elapsed, seconds=fine):<{width}} {core:>4}  {skin:>4}  {strain:>4}")
-    return lines
+    cells = [
+        (
+            _elapsed(elapsed, seconds=fine),
+            f"{opts.temp(sample.core_c):.1f}",
+            f"{opts.temp(sample.skin_c):.1f}" if sample.skin_c is not None else "-",
+            f"{sample.heat_strain:.1f}" if sample.heat_strain is not None else "-",
+        )
+        for elapsed, sample in rows
+    ]
+    headings = ("Time", "Core", "Skin", "HSI")
+    widths = [max(len(h), *(len(row[i]) for row in cells)) for i, h in enumerate(headings)]
+
+    def line(values: tuple[str, ...]) -> str:
+        time, *rest = values
+        columns = "  ".join(v.rjust(w) for v, w in zip(rest, widths[1:], strict=True))
+        return f"{time.ljust(widths[0])}  {columns}"
+
+    return [line(headings), *(line(row) for row in cells)]
 
 
 def has_report(comments: Iterable[str]) -> bool:

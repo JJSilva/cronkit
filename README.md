@@ -49,7 +49,29 @@ Three properties the design leans on:
 - **Everything comes from the environment.** No state on disk, so the container
   can be rebuilt or moved freely.
 
+## The dashboard
+
+`/` serves a single page listing every tool with its schedule, its last run, and
+the daemon's recent log output — plus **Run now** and **Dry run** buttons.
+
+It is guarded by `CRONKIT_DASHBOARD_PASSWORD`. Sign in once and a signed session
+cookie lasts 12 hours. There is no user list and no registration: one password,
+set in Railway.
+
+- The cookie is `HttpOnly`, `Secure` and `SameSite=Strict`, and is signed with an
+  HMAC keyed on the password itself — so **changing the password immediately
+  invalidates every outstanding session**.
+- Run buttons are `POST` and carry a CSRF token checked against a second cookie.
+  Scripted callers using the bearer token skip that check, because a header is
+  something a cross-site form cannot set.
+- With the password unset the page returns `503` and refuses everyone. It is
+  never left open.
+
+The page is a single self-contained document — no CDN, no build step, no
+external requests — so the whole UI ships inside the container.
+
 ## Running
+
 
 ```bash
 cronkit list                                   # what's registered, and is it configured?
@@ -70,7 +92,8 @@ local runs, or set the same keys as Railway service variables.
 
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `CRONKIT_API_TOKEN` | for `serve` | — | Shared secret guarding every endpoint except `/health` |
+| `CRONKIT_API_TOKEN` | for scripts | — | Bearer token for scripted API callers |
+| `CRONKIT_DASHBOARD_PASSWORD` | for the dashboard | — | Password for the sign-in form at `/` |
 | `CRONKIT_TOOLS` | no | all | Comma-separated list of tools to load |
 | `CRONKIT_RUN_ON_START` | no | `true` | Run each tool once at startup rather than waiting out the first interval |
 | `PORT` | no | `8000` | Port the HTTP server binds; Railway sets this |
@@ -268,8 +291,9 @@ them to each `record`:
 | `core_data_quality` | Q | Confidence; climbs as the sensor stabilises |
 
 `CIQ_core_temperature` and `CIQ_skin_temperature` carry the same readings in
-Fahrenheit and are ignored — `TP_CORE_UNITS=F` converts from the Celsius fields
-instead, so one code path covers both settings.
+Fahrenheit and are ignored — the tool converts from the Celsius fields instead,
+so one code path covers both unit settings. Output is Fahrenheit by default;
+`TP_CORE_UNITS=C` shows the sensor's own unit.
 
 Not every `record` carries a CORE reading (the sensor samples more slowly than
 the watch records), so records without one are skipped rather than interpolated.
@@ -310,8 +334,8 @@ depends on it.
 | --- | --- | --- | --- |
 | `TP_CORE_AUTH_COOKIE` | no | calendar tool's | TrainingPeaks cookie; falls back to `TP_CALENDAR_AUTH_COOKIE`, then `TP_AUTH_COOKIE` |
 | `TP_CORE_LOOKBACK_DAYS` | no | `1` | Days back to consider; `1` is today only |
-| `TP_CORE_UNITS` | no | `C` | `C` or `F` for the reported temperatures |
-| `TP_CORE_THRESHOLD_C` | no | `38.0` | Core temp at or above which time is counted, always in Celsius |
+| `TP_CORE_UNITS` | no | `F` | `F` or `C` for the reported temperatures |
+| `TP_CORE_THRESHOLD` | no | `100.4` | Core temp at or above which time is counted, in the unit above |
 | `TP_CORE_INTERVAL_MINUTES` | no | `5` | Bucket size for the table |
 | `TP_CORE_SUMMARY_ONLY` | no | `false` | Write the summary without the table |
 | `TP_CORE_INTERVAL_*_MINUTES` | no | `30` | Cadence — see the table above |
@@ -350,6 +374,8 @@ Endpoints:
 
 | Endpoint | Auth | Purpose |
 | --- | --- | --- |
+| `GET /` | password | The dashboard, or the sign-in form |
+| `GET /api/logs` | either | The daemon's in-memory log tail |
 | `GET /health` | none | Liveness only — returns `{"status":"ok"}` and nothing else |
 | `GET /status` | token | Every tool: its schedule, config, and last run |
 | `GET /tools` | token | The loaded tools and their cadences |

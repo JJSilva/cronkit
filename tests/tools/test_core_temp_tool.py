@@ -228,13 +228,38 @@ async def test_a_dry_run_reports_without_writing(monkeypatch, core_bytes):
 def test_status_never_exposes_the_cookie():
     status = make_tool().status()
     assert "cookie" not in str(status)
-    assert status["units"] == "C"
+    assert status["units"] == "F"
 
 
-def test_units_are_configurable(monkeypatch):
+def test_fahrenheit_is_the_default(monkeypatch):
+    monkeypatch.setenv("TP_CORE_AUTH_COOKIE", "cookie")
+    monkeypatch.delenv("TP_CORE_UNITS", raising=False)
+    config = CoreTempConfig.from_env()
+
+    assert config.fahrenheit is True
+    assert config.threshold_c == pytest.approx(38.0)
+
+
+def test_celsius_can_be_asked_for(monkeypatch):
+    monkeypatch.setenv("TP_CORE_AUTH_COOKIE", "cookie")
+    monkeypatch.setenv("TP_CORE_UNITS", "C")
+    assert CoreTempConfig.from_env().fahrenheit is False
+
+
+def test_the_threshold_is_configured_in_the_display_unit(monkeypatch):
+    """A Fahrenheit deployment should never have to think in Celsius."""
     monkeypatch.setenv("TP_CORE_AUTH_COOKIE", "cookie")
     monkeypatch.setenv("TP_CORE_UNITS", "F")
-    assert CoreTempConfig.from_env().fahrenheit is True
+    monkeypatch.setenv("TP_CORE_THRESHOLD", "102.0")
+
+    assert CoreTempConfig.from_env().threshold_c == pytest.approx(38.889, abs=0.01)
+
+
+def test_an_explicit_celsius_threshold_still_wins(monkeypatch):
+    monkeypatch.setenv("TP_CORE_AUTH_COOKIE", "cookie")
+    monkeypatch.setenv("TP_CORE_THRESHOLD_C", "39.0")
+
+    assert CoreTempConfig.from_env().threshold_c == pytest.approx(39.0)
 
 
 def test_the_calendar_tools_cookie_is_reused(monkeypatch):
