@@ -37,8 +37,8 @@ def require(*names: str) -> str:
     found = _first(names)
     if found:
         return found[1]
-    primary = names[0]
-    alternatives = "".join(f" (or {name})" for name in names[1:])
+    primary, *aliases = names
+    alternatives = f" (or {', '.join(aliases)})" if aliases else ""
     raise ConfigError(
         f"Missing required environment variable {primary}{alternatives}. "
         f"See README.md for the full list and how to obtain each value."

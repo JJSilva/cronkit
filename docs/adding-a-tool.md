@@ -16,8 +16,10 @@ src/cronkit/tools/my_tool/
     <clients>.py    whatever it talks to
 ```
 
-Put the upstream API clients in the tool's own package. Nothing in
-`cronkit/core/` should ever import from `cronkit/tools/`.
+Put the upstream API client in the tool's own package. When a *second* tool
+needs the same client, move it to `src/cronkit/integrations/` — that is what
+`integrations/trainingpeaks.py` is, shared by the calendar and core-temp tools.
+Nothing in `cronkit/core/` should ever import from `cronkit/tools/`.
 
 ## 2. Write the config
 
@@ -126,6 +128,11 @@ cronkit run my-tool
 
 Add tests under `tests/tools/`. `tests/conftest.py` has a `fake_tool_cls`
 fixture if you need to exercise the framework rather than the tool.
+
+If your tool parses a binary format, generate the fixture rather than committing
+a real file — this repo is public, and a device upload carries names, serial
+numbers and GPS traces. `tests/fixtures/make_core_fit.py` is the pattern: a
+committed generator plus its committed output.
 
 ## Schedules, for free
 

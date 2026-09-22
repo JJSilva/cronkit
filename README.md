@@ -10,6 +10,7 @@ now the first tool.
 | Tool | What it does |
 | --- | --- |
 | `trainingpeaks-calendar` | Syncs timed TrainingPeaks workouts into a Google Calendar |
+| `trainingpeaks-core-temp` | Posts CORE body-temperature data into TrainingPeaks post-activity comments |
 
 To add another, see **[docs/adding-a-tool.md](docs/adding-a-tool.md)**.
 
@@ -27,9 +28,12 @@ src/cronkit/
     config.py                  daemon-level settings
     env.py                     environment lookups, with alias chains
     errors.py
+  integrations/
+    trainingpeaks.py           API client shared by both TrainingPeaks tools
   tools/
     __init__.py                registers every tool
-    trainingpeaks_calendar/    tool #1: config, sync rules, API clients
+    trainingpeaks_calendar/    tool #1: config, sync rules, Google Calendar client
+    trainingpeaks_core_temp/   tool #2: config, FIT parsing, comment formatting
 ```
 
 Three properties the design leans on:
@@ -39,7 +43,9 @@ Three properties the design leans on:
   credential is missing — is reported as such and skipped; the others keep
   running. One expired cookie must not take down a deployment doing five things.
 - **`core/` never imports from `tools/`.** The framework knows the `Tool`
-  contract and nothing about any particular job.
+  contract and nothing about any particular job. Upstream API clients live with
+  their tool until a second tool needs one, at which point they move to
+  `integrations/`.
 - **Everything comes from the environment.** No state on disk, so the container
   can be rebuilt or moved freely.
 
@@ -49,6 +55,7 @@ Three properties the design leans on:
 cronkit list                                   # what's registered, and is it configured?
 cronkit run trainingpeaks-calendar --dry-run   # preview one tool
 cronkit run trainingpeaks-calendar --days 60   # tools can add their own flags
+cronkit run trainingpeaks-core-temp --dry-run
 cronkit run-all                                # every configured tool, once
 cronkit serve                                  # the scheduled daemon (what Railway starts)
 ```
@@ -213,6 +220,107 @@ expired cookie; capture a fresh value and update the Railway variable.
 Note that each run constructs fresh API clients, so both access tokens are
 re-exchanged every sync. That is fine at intervals of a few minutes; if you want
 to poll considerably more often, cache the clients across runs first.
+
+---
+
+# Tool: `trainingpeaks-core-temp`
+
+Reads the CORE body-temperature data out of a completed workout's .FIT file and
+writes it into that workout's **Post-Activity Comments** in TrainingPeaks.
+
+Each run:
+
+1. Lists completed workouts in a rolling window ending today.
+2. Skips any whose comment already carries the report block.
+3. Downloads the newest device upload and parses it.
+4. Skips workouts whose file has no CORE data — those get no comment at all.
+5. Writes the block into `athleteComments`, replacing an earlier block rather
+   than appending to it.
+
+The block looks like this:
+
+```
+----- CORE Body Temperature -----
+Core  avg 37.7 / min 36.8 / max 38.6 °C
+Skin  avg 32.7 / max 34.5 °C
+HSI   avg 4.0 / max 8.0
+Above 38.0 °C: 6m42s (34%)
+1200 samples over 19m59s · quality avg 58
+
+Time   Core  Skin   HSI
+0:00   37.0  31.4   1.0
+0:05   37.5  32.3   3.0
+0:10   37.9  33.2   5.0
+0:15   38.4  34.1   7.0
+----- end CORE Body Temperature -----
+```
+
+## Where the data comes from
+
+A CORE sensor does not write native FIT fields. It registers **developer data
+fields** — the device declares them in `field_description` messages and attaches
+them to each `record`:
+
+| Field | Units | Meaning |
+| --- | --- | --- |
+| `core_temperature` | °C | Estimated core body temperature |
+| `skin_temperature` | °C | Skin temperature at the sensor |
+| `heat_strain_index` | a.u. | CORE's 0–10 heat strain index |
+| `core_data_quality` | Q | Confidence; climbs as the sensor stabilises |
+
+`CIQ_core_temperature` and `CIQ_skin_temperature` carry the same readings in
+Fahrenheit and are ignored — `TP_CORE_UNITS=F` converts from the Celsius fields
+instead, so one code path covers both settings.
+
+Not every `record` carries a CORE reading (the sensor samples more slowly than
+the watch records), so records without one are skipped rather than interpolated.
+
+## Why there is no "processed" database
+
+The report block is delimited by a header and a footer, and the header *is* the
+processed marker. A workout whose comment contains it is skipped — and because
+the workout list response already includes the comment, an already-annotated
+workout costs no extra request. In the steady state a run is a single API call.
+
+Replacing between the markers, rather than appending, is what makes a re-run
+safe: if a device re-uploads its file, the block is rewritten in place instead of
+stacking up, and anything you wrote above or below it is left alone.
+
+One piece of genuinely in-memory state: workouts whose upload turned out to have
+no CORE data are remembered for the life of the process, so a workout recorded
+without the sensor is not re-downloaded every 20 minutes. It is a cache, not
+state — losing it on restart costs one extra download, and correctness never
+depends on it.
+
+## Configure
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `TP_CORE_AUTH_COOKIE` | no | calendar tool's | TrainingPeaks cookie; falls back to `TP_CALENDAR_AUTH_COOKIE`, then `TP_AUTH_COOKIE` |
+| `TP_CORE_LOOKBACK_DAYS` | no | `1` | Days back to consider; `1` is today only |
+| `TP_CORE_UNITS` | no | `C` | `C` or `F` for the reported temperatures |
+| `TP_CORE_THRESHOLD_C` | no | `38.0` | Core temp at or above which time is counted, always in Celsius |
+| `TP_CORE_INTERVAL_MINUTES` | no | `5` | Bucket size for the table |
+| `TP_CORE_SUMMARY_ONLY` | no | `false` | Write the summary without the table |
+| `TP_CORE_INTERVAL_*_MINUTES` | no | `30` | Cadence — see the table above |
+
+A single `TP_AUTH_COOKIE` configures both TrainingPeaks tools.
+
+> **Lookback and midnight.** The default window is today only, which matches how
+> often the tool runs. If you ride late and the upload lands after midnight, the
+> workout is dated yesterday and will be missed — set `TP_CORE_LOOKBACK_DAYS=2`
+> if that happens to you.
+
+## Regenerating the test fixture
+
+`tests/fixtures/core_ride.fit.gz` is a **synthetic** FIT file, generated by
+`tests/fixtures/make_core_fit.py`. A real device upload is not committed here
+because this repo is public and a watch's FIT file carries the athlete's name,
+device serial numbers and GPS coordinates.
+
+```bash
+python tests/fixtures/make_core_fit.py
+```
 
 ---
 

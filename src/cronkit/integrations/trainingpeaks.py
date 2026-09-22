@@ -84,10 +84,29 @@ class Workout:
     # Planned duration in hours, as TrainingPeaks reports it.
     planned_hours: float | None
 
+    # Naive local datetime from ``startTime`` — the actual start recorded by the
+    # device on upload. Present only once a workout has been completed.
+    actual_start: datetime | None = None
+
+    # Actual duration in hours, from ``totalTime``.
+    actual_hours: float | None = None
+
+    # The athlete's post-activity comment, as the list endpoint reports it.
+    athlete_comments: str | None = None
+
     @property
     def has_planned_time(self) -> bool:
         """Whether this workout carries a planned start time."""
         return self.planned_start is not None
+
+    @property
+    def is_completed(self) -> bool:
+        """Whether a device has uploaded something against this workout.
+
+        ``startTime`` is only written on upload, which makes it the cheapest
+        signal that a file might exist without fetching each workout's details.
+        """
+        return self.actual_start is not None or bool(self.actual_hours)
 
 
 def _parse_naive(value: Any) -> datetime | None:
@@ -142,6 +161,14 @@ def parse_workout(raw: dict[str, Any]) -> Workout | None:
     if isinstance(description, str):
         description = description.strip() or None
 
+    actual_hours = raw.get("totalTime")
+    if not isinstance(actual_hours, int | float) or actual_hours <= 0:
+        actual_hours = None
+
+    comments = raw.get("athleteComments")
+    if not isinstance(comments, str):
+        comments = None
+
     return Workout(
         id=str(workout_id),
         day=day,
@@ -150,7 +177,18 @@ def parse_workout(raw: dict[str, Any]) -> Workout | None:
         sport=sport_from_type_value(raw.get("workoutTypeValueId")),
         planned_start=planned_start,
         planned_hours=float(hours) if hours is not None else None,
+        actual_start=_parse_naive(raw.get("startTime")),
+        actual_hours=float(actual_hours) if actual_hours is not None else None,
+        athlete_comments=comments,
     )
+
+
+@dataclass(frozen=True)
+class DeviceFile:
+    """A file a device uploaded against a workout (typically a gzipped .FIT)."""
+
+    file_id: str
+    file_name: str
 
 
 class TrainingPeaksClient:
@@ -250,6 +288,92 @@ class TrainingPeaksClient:
 
         self._athlete_id = int(athlete_id)
         return self._athlete_id
+
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        json: Any | None = None,
+        accept: str = "application/json",
+        retry_on_401: bool = True,
+    ) -> httpx.Response:
+        """One authenticated request, retrying once through a token refresh."""
+        token = await self._token()
+        response = await self._client.request(
+            method,
+            f"{API_BASE}{endpoint}",
+            json=json,
+            headers={"Authorization": f"Bearer {token}", "Accept": accept},
+        )
+
+        if response.status_code == 401 and retry_on_401:
+            # Token may have expired mid-flight; drop it and try once more.
+            self._access_token = None
+            return await self._request(method, endpoint, json=json, accept=accept, retry_on_401=False)
+
+        if response.status_code == 401:
+            raise TrainingPeaksAuthError(f"TrainingPeaks returned 401 for {endpoint} after a token refresh.")
+        if not response.is_success:
+            raise TrainingPeaksError(f"{method} {endpoint} failed with HTTP {response.status_code}")
+
+        return response
+
+    async def workout(self, workout_id: str) -> dict[str, Any]:
+        """Fetch one workout's full object, as required for a round-trip update."""
+        athlete_id = await self.athlete_id()
+        response = await self._request("GET", f"/fitness/v6/athletes/{athlete_id}/workouts/{workout_id}")
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise TrainingPeaksError(f"Workout {workout_id} returned an unexpected payload.")
+        return payload
+
+    async def device_files(self, workout_id: str) -> list[DeviceFile]:
+        """List the device uploads attached to a workout.
+
+        These live on a separate ``/details`` resource; the main workout object
+        does not carry them.
+        """
+        athlete_id = await self.athlete_id()
+        response = await self._request("GET", f"/fitness/v6/athletes/{athlete_id}/workouts/{workout_id}/details")
+        payload = response.json()
+        infos = (payload or {}).get("workoutDeviceFileInfos") if isinstance(payload, dict) else None
+
+        files: list[DeviceFile] = []
+        for item in infos or []:
+            if not isinstance(item, dict):
+                continue
+            file_id = item.get("fileId")
+            if file_id is None:
+                continue
+            files.append(DeviceFile(file_id=str(file_id), file_name=str(item.get("fileName") or "")))
+        return files
+
+    async def download_file(self, workout_id: str, file_id: str) -> bytes:
+        """Download one device upload's raw bytes (usually gzip-compressed)."""
+        athlete_id = await self.athlete_id()
+        response = await self._request(
+            "GET",
+            f"/fitness/v6/athletes/{athlete_id}/workouts/{workout_id}/rawfiledata/{file_id}",
+            accept="*/*",
+        )
+        return response.content
+
+    async def update_workout(self, workout_id: str, changes: dict[str, Any]) -> None:
+        """Apply ``changes`` to a workout.
+
+        TrainingPeaks rejects a partial body, so this reads the current object,
+        merges on top of it, and writes the whole thing back. Read-modify-write
+        means a change made in the UI between the two calls is lost; the window
+        is one request wide and the alternative is not offered by the API.
+        """
+        existing = await self.workout(workout_id)
+        athlete_id = await self.athlete_id()
+        await self._request(
+            "PUT",
+            f"/fitness/v6/athletes/{athlete_id}/workouts/{workout_id}",
+            json={**existing, **changes},
+        )
 
     async def workouts(self, start: date, end: date) -> list[Workout]:
         """List workouts between ``start`` and ``end`` inclusive."""

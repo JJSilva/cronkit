@@ -5,11 +5,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from cronkit.integrations.trainingpeaks import Workout
 from cronkit.tools.trainingpeaks_calendar import sync as sync_module
 from cronkit.tools.trainingpeaks_calendar.config import CalendarSyncConfig
 from cronkit.tools.trainingpeaks_calendar.gcal import SyncedEvent, event_id_for
 from cronkit.tools.trainingpeaks_calendar.sync import event_window, needs_update, run_sync
-from cronkit.tools.trainingpeaks_calendar.trainingpeaks import Workout
 
 TZ = ZoneInfo("America/Los_Angeles")
 

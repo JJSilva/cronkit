@@ -21,9 +21,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from cronkit.core.errors import ConfigError
 from cronkit.core.tool import ToolResult
+from cronkit.integrations.trainingpeaks import TrainingPeaksClient, Workout
 from cronkit.tools.trainingpeaks_calendar.config import CalendarSyncConfig
 from cronkit.tools.trainingpeaks_calendar.gcal import CalendarClient, SyncedEvent, event_id_for
-from cronkit.tools.trainingpeaks_calendar.trainingpeaks import TrainingPeaksClient, Workout
 
 logger = logging.getLogger(__name__)
 
