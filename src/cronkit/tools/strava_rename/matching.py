@@ -113,6 +113,40 @@ def is_default_name(name: str, extra_patterns: Iterable[re.Pattern[str]] = ()) -
     return any(pattern.search(stripped) for pattern in extra_patterns)
 
 
+# The word appended to a title so the Strava feed says what the session was,
+# and the words that mean the title already says it. Only swim, bike and run
+# get one; a bike is always a "Ride".
+_SPORT_SUFFIX: dict[str, tuple[str, re.Pattern[str]]] = {
+    "Swim": ("Swim", re.compile(r"\bswim", re.IGNORECASE)),
+    "Bike": ("Ride", re.compile(r"\b(?:rid(?:e|es|ing)|bik(?:e|es|ing)|cycl(?:e|es|ing))\b", re.IGNORECASE)),
+    "Run": ("Run", re.compile(r"\b(?:run|runs|running)\b", re.IGNORECASE)),
+}
+_STRAVA_SPORT_TO_TP = {
+    "Swim": "Swim",
+    **dict.fromkeys(
+        ("Ride", "VirtualRide", "GravelRide", "MountainBikeRide", "EBikeRide", "EMountainBikeRide"), "Bike"
+    ),
+    **dict.fromkeys(("Run", "TrailRun", "VirtualRun"), "Run"),
+}
+
+
+def with_sport(title: str, tp_sport: str | None, strava_sport_type: str = "") -> str:
+    """The title with its sport appended, e.g. "Masters" -> "Masters Swim".
+
+    The TrainingPeaks sport decides; a workout without a swim, bike or run
+    sport (a Brick, say) falls back to the Strava activity's own sport. A title
+    that already names its sport ("Long Ride", "Bike Intervals") is unchanged.
+    """
+    sport = "Bike" if tp_sport == "MtnBike" else tp_sport
+    if sport not in _SPORT_SUFFIX:
+        sport = _STRAVA_SPORT_TO_TP.get(strava_sport_type)
+    if sport is None:
+        return title
+    word, mentions = _SPORT_SUFFIX[sport]
+    title = title.strip()
+    return title if mentions.search(title) else f"{title} {word}"
+
+
 def sports_compatible(tp_sport: str | None, strava_sport_type: str) -> bool:
     allowed = SPORT_COMPATIBILITY.get(tp_sport or "")
     return allowed is None or strava_sport_type in allowed

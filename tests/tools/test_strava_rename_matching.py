@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from cronkit.integrations.trainingpeaks import Workout
-from cronkit.tools.strava_rename.matching import is_default_name, pair_up
+from cronkit.tools.strava_rename.matching import is_default_name, pair_up, with_sport
 from cronkit.tools.strava_rename.strava import Activity, parse_activity
 
 TOLERANCE = timedelta(minutes=2)
@@ -75,6 +75,40 @@ def test_extra_patterns_extend_the_default_list():
     zwift = re.compile(r"^Zwift - ", re.IGNORECASE)
     assert is_default_name("Zwift - Volcano Flat in Watopia", [zwift])
     assert not is_default_name("Zwift - Volcano Flat in Watopia")
+
+
+# --- sport suffix ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "title, tp_sport, strava_sport, expected",
+    [
+        ("Masters", "Swim", "Swim", "Masters Swim"),
+        ("Tempo", "Bike", "Ride", "Tempo Ride"),
+        ("Long", "Bike", "VirtualRide", "Long Ride"),
+        ("Fartlek", "Run", "Run", "Fartlek Run"),
+        ("Trail Loop", "MtnBike", "MountainBikeRide", "Trail Loop Ride"),
+        # Already names its sport: unchanged, never "Long Ride Ride".
+        ("Long Ride", "Bike", "Ride", "Long Ride"),
+        ("long ride", "Bike", "Ride", "long ride"),
+        ("Bike Intervals", "Bike", "Ride", "Bike Intervals"),
+        ("Indoor Cycling Sweetspot", "Bike", "VirtualRide", "Indoor Cycling Sweetspot"),
+        ("Longish Run", "Run", "Run", "Longish Run"),
+        ("Running Drills", "Run", "Run", "Running Drills"),
+        ("Open Water Swim", "Swim", "Swim", "Open Water Swim"),
+        ("Swimming Technique", "Swim", "Swim", "Swimming Technique"),
+        # A word that merely contains the sport does not count.
+        ("Brunch Loop", "Run", "Run", "Brunch Loop Run"),
+        # Only swim, bike and run get a suffix.
+        ("Core", "Strength", "WeightTraining", "Core"),
+        ("Recovery", "Walk", "Walk", "Recovery"),
+        # A Brick falls back to the Strava activity's own sport.
+        ("Brick", "Brick", "Run", "Brick Run"),
+        ("Brick", None, "Workout", "Brick"),
+    ],
+)
+def test_the_sport_is_appended_unless_the_title_already_says_it(title, tp_sport, strava_sport, expected):
+    assert with_sport(title, tp_sport, strava_sport) == expected
 
 
 # --- pairing ---------------------------------------------------------------

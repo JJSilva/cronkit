@@ -12,12 +12,15 @@ Business rules, in the order they apply:
    minutes and whose sport agrees.
 3. Skip a pair whose TrainingPeaks title is itself generic ("Running") — that is
    an unplanned upload, and its title is no better than Strava's.
-4. Skip a pair whose Strava name is already the title.
-5. Skip a pair whose Strava name a person chose. Only default names ("Morning
+4. Name the activity after the title plus its sport — "Masters" becomes
+   "Masters Swim", "Tempo" on a bike becomes "Tempo Ride" — unless the title
+   already says the sport. Only swims, rides and runs get a suffix.
+5. Skip a pair whose Strava name is already that name.
+6. Skip a pair whose Strava name a person chose. Only default names ("Morning
    Run", "Road Cycling") are replaced, so a rename done by hand in Strava always
    wins — and an activity this tool renamed is never touched again, which is the
    whole "has this been processed" check.
-6. Rename. Only the name changes; nothing else on the activity is sent.
+7. Rename. Only the name changes; nothing else on the activity is sent.
 """
 
 import argparse
@@ -29,7 +32,7 @@ from cronkit.core import clock
 from cronkit.core.tool import Tool, ToolResult
 from cronkit.integrations.trainingpeaks import TrainingPeaksClient, Workout
 from cronkit.tools.strava_rename.config import StravaRenameConfig
-from cronkit.tools.strava_rename.matching import is_default_name, pair_up
+from cronkit.tools.strava_rename.matching import is_default_name, pair_up, with_sport
 from cronkit.tools.strava_rename.strava import StravaClient
 
 logger = logging.getLogger(__name__)
@@ -130,19 +133,21 @@ class StravaRenameTool(Tool):
 
                 for pair in pairs:
                     day, title, current = pair.workout.day, pair.workout.title, pair.activity.name
-                    label = f"{day} {current!r} -> {title!r}"
-
                     if is_default_name(title, patterns):
                         outcomes["generic_tp_title"].append(f"{day} {title}")
-                    elif current.strip() == title:
-                        outcomes["already_named"].append(f"{day} {title}")
+                        continue
+
+                    name = with_sport(title, pair.workout.sport, pair.activity.sport_type)
+                    label = f"{day} {current!r} -> {name!r}"
+                    if current.strip() == name:
+                        outcomes["already_named"].append(f"{day} {name}")
                     elif not is_default_name(current, patterns):
                         outcomes["custom_name_kept"].append(f"{day} {current}")
                     elif dry_run:
                         outcomes["renamed"].append(label)
                     else:
                         try:
-                            await strava.rename(pair.activity.id, title)
+                            await strava.rename(pair.activity.id, name)
                         except Exception as exc:
                             logger.exception("Failed to rename Strava activity %s", pair.activity.id)
                             errors.append(f"{label}: {exc}")

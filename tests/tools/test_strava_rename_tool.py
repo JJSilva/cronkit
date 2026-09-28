@@ -108,6 +108,25 @@ async def test_a_default_named_activity_takes_the_workout_title(monkeypatch):
     assert result.details["renamed"] == ["2026-09-22 'Morning Run' -> 'Longish Run'"]
 
 
+async def test_the_sport_is_appended_to_a_title_that_lacks_it(monkeypatch):
+    strava = FakeStrava([activity(name="Morning Ride", sport_type="Ride")])
+    wire(monkeypatch, [workout(title="Tempo", sport="Bike")], strava)
+
+    result = await make_tool().run()
+
+    assert strava.renames == [("a1", "Tempo Ride")]
+
+
+async def test_an_activity_already_carrying_the_suffixed_name_is_left_alone(monkeypatch):
+    strava = FakeStrava([activity(name="Masters Swim", sport_type="Swim")])
+    wire(monkeypatch, [workout(title="Masters", sport="Swim")], strava)
+
+    result = await make_tool().run()
+
+    assert strava.renames == []
+    assert result.details["already_named"] == ["2026-09-22 Masters Swim"]
+
+
 # --- what is left alone ----------------------------------------------------
 
 
@@ -174,7 +193,7 @@ async def test_one_failing_rename_does_not_stop_the_others(monkeypatch):
 
     assert not result.ok
     assert len(result.errors) == 1
-    assert strava.renames == [("a2", "Masters")]
+    assert strava.renames == [("a2", "Masters Swim")]
 
 
 async def test_a_dry_run_reports_without_renaming(monkeypatch):

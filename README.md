@@ -384,6 +384,16 @@ Each run:
 4. Renames each paired activity whose Strava name is a default and whose
    TrainingPeaks title is not.
 
+## The sport suffix
+
+Swims, rides and runs get their sport appended to the TrainingPeaks title, so
+the Strava feed says what the session was: `Masters` becomes `Masters Swim`,
+`Tempo` on a bike becomes `Tempo Ride` (always "Ride", never "Bike"), `Fartlek`
+becomes `Fartlek Run`. A title that already names its sport is left as it is —
+`Long Ride`, `Bike Intervals`, `Open Water Swim`, `Running Drills` — so nothing
+is ever said twice. Strength, walks and other sports get no suffix. A brick
+takes the sport of each Strava activity it pairs with.
+
 ## How pairing works
 
 Both services read the start time from the same device file, so a genuine pair
