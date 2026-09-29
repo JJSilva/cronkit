@@ -3,7 +3,7 @@
 Business rules, in the order they apply:
 
 1. Look at a rolling window starting today.
-2. Keep only workouts that have a planned start time (``startTimePlanned``).
+2. Keep only workouts that have a planned start time (see ``parse_workout``).
    Untimed workouts are skipped entirely — they never reach the calendar.
 3. The workout title becomes the event title; the workout description becomes
    the event description.

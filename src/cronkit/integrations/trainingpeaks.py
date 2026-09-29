@@ -7,9 +7,10 @@ Auth mirrors the trainingpeaks-mcp server: a ``Production_tpAuth`` cookie is
 exchanged for a short-lived OAuth bearer token via ``GET /users/v3/token``.
 
 The important field here is ``startTimePlanned`` — the time you set on a planned
-workout in the TrainingPeaks UI. It is distinct from ``startTime``, which is the
-actual start recorded by your device on upload and therefore only ever present
-on workouts you have already completed.
+workout in the TrainingPeaks UI. It is distinct from ``startTime``, which is
+normally the actual start recorded by your device on upload — except that a
+time set on a workout dated today lands in ``startTime`` instead; see
+:func:`parse_workout`.
 """
 
 import logging
@@ -79,7 +80,8 @@ class Workout:
     title: str
     description: str | None
     sport: str | None
-    # Naive local datetime from ``startTimePlanned``; None when no time is set.
+    # Naive local datetime from ``startTimePlanned`` (or, for a workout nothing
+    # has been recorded against, ``startTime``); None when no time is set.
     planned_start: datetime | None
     # Planned duration in hours, as TrainingPeaks reports it.
     planned_hours: float | None
@@ -146,7 +148,18 @@ def parse_workout(raw: dict[str, Any]) -> Workout | None:
     if workout_id is None or day is None:
         return None
 
+    actual_hours = raw.get("totalTime")
+    if not isinstance(actual_hours, int | float) or actual_hours <= 0:
+        actual_hours = None
+
     planned_start = _parse_naive(raw.get("startTimePlanned"))
+    actual_start = _parse_naive(raw.get("startTime"))
+    # Setting a time on a workout dated *today* makes the TrainingPeaks UI write
+    # it to ``startTime`` instead of ``startTimePlanned``. With nothing recorded
+    # against the workout, that ``startTime`` is a plan, not an actual start.
+    if planned_start is None and actual_start is not None and actual_hours is None:
+        planned_start, actual_start = actual_start, None
+
     # Guard against a planned time that disagrees with the workout's day: the
     # day field is authoritative for placement, so realign rather than
     # scheduling the event on the wrong date.
@@ -162,10 +175,6 @@ def parse_workout(raw: dict[str, Any]) -> Workout | None:
     if isinstance(description, str):
         description = description.strip() or None
 
-    actual_hours = raw.get("totalTime")
-    if not isinstance(actual_hours, int | float) or actual_hours <= 0:
-        actual_hours = None
-
     comments = tuple(
         entry["comment"]
         for entry in (raw.get("workoutComments") or [])
@@ -180,7 +189,7 @@ def parse_workout(raw: dict[str, Any]) -> Workout | None:
         sport=sport_from_type_value(raw.get("workoutTypeValueId")),
         planned_start=planned_start,
         planned_hours=float(hours) if hours is not None else None,
-        actual_start=_parse_naive(raw.get("startTime")),
+        actual_start=actual_start,
         actual_hours=float(actual_hours) if actual_hours is not None else None,
         comments=comments,
     )

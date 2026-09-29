@@ -34,6 +34,19 @@ def test_actual_start_time_does_not_count_as_a_planned_time():
     assert not workout.has_planned_time
 
 
+def test_start_time_on_an_unrecorded_workout_is_the_planned_time():
+    """A time set on today's workout lands in ``startTime``, not ``startTimePlanned``."""
+    workout = parse_workout(raw(startTime="2026-09-16T12:00:00", totalTime=None))
+    assert workout.planned_start == datetime(2026, 9, 16, 12, 0)
+    assert workout.actual_start is None
+    assert not workout.is_completed
+
+
+def test_start_time_planned_wins_over_start_time():
+    workout = parse_workout(raw(startTimePlanned="2026-09-16T06:30:00", startTime="2026-09-16T12:00:00"))
+    assert workout.planned_start == datetime(2026, 9, 16, 6, 30)
+
+
 def test_workout_without_any_time_has_no_planned_start():
     assert parse_workout(raw()).planned_start is None
 
