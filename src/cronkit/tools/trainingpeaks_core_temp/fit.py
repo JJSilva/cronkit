@@ -25,7 +25,6 @@ the watch records — so records without a core reading are skipped rather than
 interpolated.
 """
 
-import gzip
 import io
 import logging
 import statistics
@@ -34,9 +33,9 @@ from datetime import datetime, timedelta
 
 import fitdecode
 
-logger = logging.getLogger(__name__)
+from cronkit.integrations.fit import decompress, number
 
-GZIP_MAGIC = b"\x1f\x8b"
+logger = logging.getLogger(__name__)
 
 CORE_TEMP_FIELD = "core_temperature"
 SKIN_TEMP_FIELD = "skin_temperature"
@@ -151,19 +150,6 @@ class CoreSeries:
         return rows
 
 
-def _decompress(raw: bytes) -> bytes:
-    """Unwrap gzip if present. TrainingPeaks serves device uploads compressed."""
-    if raw[:2] == GZIP_MAGIC:
-        return gzip.decompress(raw)
-    return raw
-
-
-def _number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        return None
-    return float(value)
-
-
 def parse_core_series(raw: bytes) -> CoreSeries:
     """Read every CORE reading out of a (optionally gzipped) FIT file.
 
@@ -172,13 +158,13 @@ def parse_core_series(raw: bytes) -> CoreSeries:
     """
     samples: list[CoreSample] = []
 
-    with fitdecode.FitReader(io.BytesIO(_decompress(raw))) as fit:
+    with fitdecode.FitReader(io.BytesIO(decompress(raw))) as fit:
         for frame in fit:
             if frame.frame_type != fitdecode.FIT_FRAME_DATA or frame.name != "record":
                 continue
 
             fields = {f.name: f.value for f in frame.fields}
-            core = _number(fields.get(CORE_TEMP_FIELD))
+            core = number(fields.get(CORE_TEMP_FIELD))
             timestamp = fields.get("timestamp")
             if core is None or not isinstance(timestamp, datetime):
                 continue
@@ -186,13 +172,13 @@ def parse_core_series(raw: bytes) -> CoreSeries:
                 logger.debug("Discarding implausible core temperature %.1f C", core)
                 continue
 
-            quality = _number(fields.get(QUALITY_FIELD))
+            quality = number(fields.get(QUALITY_FIELD))
             samples.append(
                 CoreSample(
                     timestamp=timestamp,
                     core_c=core,
-                    skin_c=_number(fields.get(SKIN_TEMP_FIELD)),
-                    heat_strain=_number(fields.get(HEAT_STRAIN_FIELD)),
+                    skin_c=number(fields.get(SKIN_TEMP_FIELD)),
+                    heat_strain=number(fields.get(HEAT_STRAIN_FIELD)),
                     quality=int(quality) if quality is not None else None,
                 )
             )

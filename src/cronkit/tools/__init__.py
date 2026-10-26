@@ -8,9 +8,11 @@ from cronkit.core.registry import register
 from cronkit.tools.strava_rename import StravaRenameTool
 from cronkit.tools.trainingpeaks_calendar import TrainingPeaksCalendarTool
 from cronkit.tools.trainingpeaks_core_temp import TrainingPeaksCoreTempTool
+from cronkit.tools.trainingpeaks_tymewear import TrainingPeaksTymewearTool
 
 register(TrainingPeaksCalendarTool)
 register(TrainingPeaksCoreTempTool)
+register(TrainingPeaksTymewearTool)
 register(StravaRenameTool)
 
-__all__ = ["StravaRenameTool", "TrainingPeaksCalendarTool", "TrainingPeaksCoreTempTool"]
+__all__ = ["StravaRenameTool", "TrainingPeaksCalendarTool", "TrainingPeaksCoreTempTool", "TrainingPeaksTymewearTool"]
